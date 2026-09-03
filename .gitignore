@@ -24,3 +24,5 @@ dist-ssr
 *.sw?
 server/.env
 server/dist
+
+project-structure.txt
