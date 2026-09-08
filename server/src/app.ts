@@ -1,6 +1,9 @@
 import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
+import { errorHandler } from './middleware/errorHandler.js';
+import { notFound } from './middleware/notFound.js';
+import authRoutes from './routes/auth.routes.js';
 
 const app = express();
 
@@ -18,5 +21,9 @@ app.get('/api/v1/health', (_req, res) => {
     message: 'ParkEase API is running',
   });
 });
+
+app.use('/api/v1/auth', authRoutes);
+app.use(notFound);
+app.use(errorHandler);
 
 export default app;

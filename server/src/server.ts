@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 
 import app from './app.js';
+import { connectDatabase } from './config/database.js';
 
 const PORT = Number(process.env.PORT) || 5000;
 
@@ -24,6 +25,15 @@ io.on('connection', (socket) => {
   });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`ParkEase API running on http://localhost:${PORT}`);
+async function startServer(): Promise<void> {
+  await connectDatabase();
+
+  httpServer.listen(PORT, () => {
+    console.log(`ParkEase API running on http://localhost:${PORT}`);
+  });
+}
+
+startServer().catch((error: unknown) => {
+  console.error('Failed to start ParkEase API:', error);
+  process.exit(1);
 });

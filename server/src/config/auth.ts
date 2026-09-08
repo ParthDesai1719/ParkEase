@@ -1,8 +1,6 @@
-export const authConfig = {
-  jwtSecret: process.env.JWT_SECRET ?? '',
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
-};
+import { env } from './env.js';
 
-if (!authConfig.jwtSecret) {
-  throw new Error('JWT_SECRET is not defined in the environment variables');
-}
+export const authConfig = {
+  jwtSecret: env.JWT_SECRET,
+  jwtExpiresIn: env.JWT_EXPIRES_IN,
+} as const;
