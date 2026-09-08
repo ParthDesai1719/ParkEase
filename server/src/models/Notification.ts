@@ -37,6 +37,10 @@ const eventTypeValues = [
   'Booking Completed',
   'Manual Entry Approved',
   'Walk-in Booking Created',
+  'Customer Registration Successful',
+  'Parking Owner Application Submitted',
+  'Parking Owner Application Approved',
+  'Parking Owner Application Rejected',
 ] as const;
 
 const priorityValues = ['Low', 'Normal', 'High', 'Critical'] as const;

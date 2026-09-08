@@ -12,6 +12,10 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().min(1).default('7d'),
 
   CLIENT_URL: z.string().url().default('http://localhost:5173'),
+
+  RAZORPAY_KEY_ID: z.string().default(''),
+
+  RAZORPAY_KEY_SECRET: z.string().default(''),
 });
 
 export const env = envSchema.parse(process.env);

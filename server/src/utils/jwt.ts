@@ -5,6 +5,7 @@ import { authConfig } from '../config/auth.js';
 export interface JwtPayload {
   userId: string;
   roleId: string;
+  sessionId: string;
 }
 
 export function generateAccessToken(payload: JwtPayload): string {
