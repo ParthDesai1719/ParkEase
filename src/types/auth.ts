@@ -1,4 +1,10 @@
-export type RoleCode = 'CUSTOMER' | 'PARKING_OWNER' | 'SECURITY_STAFF' | 'ADMIN';
+export type RoleCode =
+  | 'CUSTOMER'
+  | 'PARKING_OWNER'
+  | 'OWNER'
+  | 'SECURITY_STAFF'
+  | 'SECURITY'
+  | 'ADMIN';
 
 export interface Role {
   _id: string;
@@ -93,6 +99,8 @@ export interface RequestRegisterOtpPayload {
   mobileNumber: string;
   vehicleNumber: string;
   vehicleType: VehicleType;
+  vehicleBrand: string;
+  vehicleModel: string;
   termsAccepted: boolean;
 }
 
@@ -108,6 +116,8 @@ export interface VerifyRegisterOtpPayload {
   mobileNumber: string;
   vehicleNumber: string;
   vehicleType: VehicleType;
+  vehicleBrand: string;
+  vehicleModel: string;
   termsAccepted: boolean;
   emailOtp: string;
   mobileOtp: string;

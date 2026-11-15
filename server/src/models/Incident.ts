@@ -10,13 +10,17 @@ const incidentSourceValues = [
 ] as const;
 
 const incidentTypeValues = [
+  'Invalid QR',
+  'Wrong Vehicle',
+  'Overstay',
+  'Lost Ticket',
+  'Lost Ticket / QR',
   'Vehicle Damage',
   'Parking Dispute',
   'Unauthorized Entry',
   'Unauthorized Exit',
   'Vehicle Breakdown',
   'Incorrect Parking',
-  'Lost Ticket / QR',
   'Security Concern',
   'Emergency',
   'Other',

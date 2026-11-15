@@ -168,9 +168,7 @@ const bookingSchema = new mongoose.Schema(
 
     qrCode: {
       type: String,
-      default: null,
-      unique: true,
-      sparse: true,
+      default: undefined,
       trim: true,
     },
 

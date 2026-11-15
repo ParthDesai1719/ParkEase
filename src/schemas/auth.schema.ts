@@ -13,9 +13,9 @@ export const emailLoginSchema = z.object({
   email: z
     .string()
     .trim()
-    .toLowerCase()
     .min(1, 'Email address is required.')
-    .email('Please provide a valid email address.'),
+    .email('Please enter a valid email address (e.g. name@example.com).')
+    .toLowerCase(),
 });
 
 export type EmailLoginFormValues = z.infer<typeof emailLoginSchema>;
@@ -27,7 +27,9 @@ export const mobileLoginFormSchema = z.object({
   mobileDigits: z
     .string()
     .trim()
-    .regex(TEN_DIGIT_MOBILE_REGEX, 'Mobile number must contain exactly 10 digits.'),
+    .min(1, 'Mobile number is required.')
+    .regex(/^\d+$/, 'Mobile number must contain digits only.')
+    .length(10, 'Mobile number must be exactly 10 digits (excluding +91).'),
 });
 
 export type MobileLoginFormValues = z.infer<typeof mobileLoginFormSchema>;
@@ -98,6 +100,16 @@ export const customerRegistrationFormSchema = z.object({
   vehicleType: z.enum(VEHICLE_TYPES, {
     message: 'Vehicle type must be one of: Bike, Car, SUV, EV.',
   }),
+  vehicleBrand: z
+    .string()
+    .trim()
+    .min(1, 'Vehicle brand is required (e.g. Honda, Hyundai, Tata).')
+    .max(50, 'Vehicle brand cannot exceed 50 characters.'),
+  vehicleModel: z
+    .string()
+    .trim()
+    .min(1, 'Vehicle model is required (e.g. City, Creta, Nexon EV).')
+    .max(50, 'Vehicle model cannot exceed 50 characters.'),
   termsAccepted: z.boolean().refine((val) => val === true, {
     message: 'Terms & Conditions must be accepted.',
   }),

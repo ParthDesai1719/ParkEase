@@ -1,5 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
-import type mongoose from 'mongoose';
+import mongoose from 'mongoose';
+import { PermissionModel } from '../models/Permission.js';
+import { RoleModel, type Role } from '../models/Role.js';
 import { SessionModel, type Session } from '../models/Session.js';
 import { UserModel, type User } from '../models/User.js';
 import { AppError } from '../utils/AppError.js';
@@ -65,6 +67,14 @@ export async function requireAuth(
       throw new AppError('Account is suspended.', 403, 'E007');
     }
 
+    if (user.accountStatus === 'Pending Approval') {
+      throw new AppError('Your account is pending administrator approval.', 403, 'E043');
+    }
+
+    if (user.accountStatus === 'Pending Verification') {
+      throw new AppError('Account verification is pending.', 403, 'E043');
+    }
+
     if (user.accountStatus === 'Deactivated' || user.accountStatus === 'Deleted') {
       throw new AppError('Account is not eligible for authentication.', 403, 'E042');
     }
@@ -81,4 +91,62 @@ export async function requireAuth(
 
     next(new AppError('Invalid or expired access token.', 401, 'E039'));
   }
+}
+
+export function requireRole(...allowedRoles: string[]) {
+  return async (req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.roleId || !mongoose.isValidObjectId(req.roleId)) {
+        throw new AppError('Access denied: role not associated with session.', 403, 'E007');
+      }
+
+      const role = await (RoleModel as mongoose.Model<Role>).findById(req.roleId).lean().exec();
+
+      if (!role || !role.isActive) {
+        throw new AppError('Access denied: assigned role is inactive or not found.', 403, 'E007');
+      }
+
+      if (!allowedRoles.includes(role.roleCode)) {
+        throw new AppError('Access denied: insufficient role privileges.', 403, 'E007');
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
+export function requirePermission(...requiredPermissions: string[]) {
+  return async (req: AuthenticatedRequest, _res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.roleId || !mongoose.isValidObjectId(req.roleId)) {
+        throw new AppError('Access denied: role not associated with session.', 403, 'E007');
+      }
+
+      // Ensure Permission model is registered before populate
+      void PermissionModel;
+
+      const role = await (RoleModel as mongoose.Model<Role>)
+        .findById(req.roleId)
+        .populate<{ permissions: Array<{ permissionCode: string }> }>('permissions')
+        .lean()
+        .exec();
+
+      if (!role || !role.isActive) {
+        throw new AppError('Access denied: assigned role is inactive or not found.', 403, 'E007');
+      }
+
+      const assignedCodes = new Set((role.permissions || []).map((p) => p.permissionCode));
+      const hasAll = requiredPermissions.every((code) => assignedCodes.has(code));
+
+      if (!hasAll) {
+        throw new AppError('Access denied: missing required permissions.', 403, 'E007');
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
 }

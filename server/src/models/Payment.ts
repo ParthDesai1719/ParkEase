@@ -160,19 +160,19 @@ const paymentSchema = new mongoose.Schema(
 
     transactionId: {
       type: String,
-      default: null,
+      default: undefined,
       trim: true,
     },
 
     gatewayOrderId: {
       type: String,
-      default: null,
+      default: undefined,
       trim: true,
     },
 
     gatewayPaymentId: {
       type: String,
-      default: null,
+      default: undefined,
       trim: true,
     },
 

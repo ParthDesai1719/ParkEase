@@ -100,6 +100,16 @@ export const requestRegisterOtpSchema = z.object({
   vehicleType: z.enum(['Bike', 'Car', 'SUV', 'EV'], {
     message: 'Vehicle type must be one of: Bike, Car, SUV, EV.',
   }),
+  vehicleBrand: z
+    .string()
+    .trim()
+    .min(1, 'Vehicle brand is required.')
+    .max(50, 'Vehicle brand cannot exceed 50 characters.'),
+  vehicleModel: z
+    .string()
+    .trim()
+    .min(1, 'Vehicle model is required.')
+    .max(50, 'Vehicle model cannot exceed 50 characters.'),
   termsAccepted: z.boolean().refine((val) => val === true, {
     message: 'Terms & Conditions must be accepted.',
   }),
@@ -130,6 +140,16 @@ export const verifyRegisterOtpSchema = z.object({
   vehicleType: z.enum(['Bike', 'Car', 'SUV', 'EV'], {
     message: 'Vehicle type must be one of: Bike, Car, SUV, EV.',
   }),
+  vehicleBrand: z
+    .string()
+    .trim()
+    .min(1, 'Vehicle brand is required.')
+    .max(50, 'Vehicle brand cannot exceed 50 characters.'),
+  vehicleModel: z
+    .string()
+    .trim()
+    .min(1, 'Vehicle model is required.')
+    .max(50, 'Vehicle model cannot exceed 50 characters.'),
   termsAccepted: z.boolean().refine((val) => val === true, {
     message: 'Terms & Conditions must be accepted.',
   }),

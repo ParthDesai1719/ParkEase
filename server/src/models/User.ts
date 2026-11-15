@@ -92,6 +92,24 @@ const userSchema = new mongoose.Schema(
       required: true,
       default: 'Asia/Kolkata',
     },
+
+    employeeId: {
+      type: String,
+      trim: true,
+      default: null,
+      maxlength: 50,
+    },
+
+    invitationStatus: {
+      type: String,
+      enum: ['Pending', 'Sent', 'Accepted'],
+      default: null,
+    },
+
+    invitationSentAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     collection: 'users',

@@ -20,6 +20,13 @@ const parkingStatusValues = [
   'Temporarily Closed',
 ] as const;
 
+export const layoutReviewStatusValues = [
+  'Draft',
+  'Pending Owner Review',
+  'Owner Changes Requested',
+  'Owner Confirmed',
+] as const;
+
 const parkingLotSchema = new mongoose.Schema(
   {
     ownerId: {
@@ -229,6 +236,43 @@ const parkingLotSchema = new mongoose.Schema(
       required: true,
       enum: parkingStatusValues,
       default: 'Active',
+    },
+
+    submissionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ParkingFacilitySubmission',
+      default: null,
+      index: true,
+    },
+
+    layoutReviewStatus: {
+      type: String,
+      enum: layoutReviewStatusValues,
+      default: 'Draft',
+      index: true,
+    },
+
+    layoutReviewNotes: {
+      type: String,
+      default: null,
+      maxlength: 2000,
+    },
+
+    layoutReviewFloorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ParkingFloor',
+      default: null,
+    },
+
+    layoutReviewFloorName: {
+      type: String,
+      default: null,
+      maxlength: 100,
+    },
+
+    layoutConfirmedAt: {
+      type: Date,
+      default: null,
     },
   },
   {

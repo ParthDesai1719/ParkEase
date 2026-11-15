@@ -4,6 +4,7 @@ import { AUTH_CONSTANTS } from '../config/constants.js';
 import { OtpVerificationModel, type OtpVerification } from '../models/OtpVerification.js';
 import { AppError } from '../utils/AppError.js';
 import { emailService } from './email.service.js';
+import { smsService } from './sms.service.js';
 
 export type VerificationType =
   | 'REGISTRATION_EMAIL'
@@ -120,15 +121,20 @@ class OtpService {
       verificationStatus: 'Pending',
     });
 
-    // In V1, both Email and Mobile OTPs are delivered to the registered email
-    const deliveryEmail = normalizedEmail;
-    if (deliveryEmail) {
+    // If deliveryMethod is Email, send via emailService
+    if (deliveryMethod === 'Email' && normalizedEmail) {
       const purpose = params.purposeLabel || params.verificationType.replace(/_/g, ' ');
-      await emailService.sendOtpEmail(deliveryEmail, otpCode, purpose);
+      await emailService.sendOtpEmail(normalizedEmail, otpCode, purpose);
+    } else if (deliveryMethod === 'SMS' && normalizedMobile) {
+      const purpose = params.purposeLabel || params.verificationType.replace(/_/g, ' ');
+      await smsService.sendOtpSms(normalizedMobile, otpCode, purpose);
     }
 
     return {
-      message: 'Verification code sent successfully.',
+      message:
+        deliveryMethod === 'SMS'
+          ? 'Verification code sent to your registered mobile number.'
+          : 'Verification code sent successfully.',
       cooldownSeconds: AUTH_CONSTANTS.OTP_RESEND_COOLDOWN_SECONDS,
     };
   }
@@ -139,9 +145,10 @@ class OtpService {
     const normalizedEmail = params.email ? params.email.trim().toLowerCase() : null;
     const normalizedMobile = params.mobileNumber ? params.mobileNumber.trim() : null;
 
-    const filter: OtpRecipientFilter = {
+    const filter: Record<string, unknown> = {
       verificationType: params.verificationType,
-      verificationStatus: 'Pending',
+      verificationStatus: { $in: ['Pending', 'Verified'] },
+      consumedAt: null,
     };
     if (normalizedEmail) filter.email = normalizedEmail;
     if (normalizedMobile) filter.mobileNumber = normalizedMobile;
@@ -162,6 +169,15 @@ class OtpService {
       otpRecord.verificationStatus = 'Expired';
       await otpRecord.save();
       throw new AppError('Verification code has expired. Please request a new one.', 401, 'E004');
+    }
+
+    // If already verified in this session but not consumed, re-check hash
+    if (otpRecord.verificationStatus === 'Verified') {
+      const inputHash = this.hashOtp(params.otp);
+      if (inputHash !== otpRecord.otpCodeHash) {
+        throw new AppError('Invalid verification code.', 401, 'E003');
+      }
+      return otpRecord;
     }
 
     // Check maximum attempts

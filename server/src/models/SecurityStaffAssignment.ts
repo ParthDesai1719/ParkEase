@@ -58,6 +58,13 @@ const securityStaffAssignmentSchema = new mongoose.Schema(
       maxlength: 500,
       trim: true,
     },
+
+    employeeId: {
+      type: String,
+      default: null,
+      maxlength: 50,
+      trim: true,
+    },
   },
   {
     collection: 'securityStaffAssignments',

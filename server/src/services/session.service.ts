@@ -7,6 +7,20 @@ import { AppError } from '../utils/AppError.js';
 import { generateAccessToken } from '../utils/jwt.js';
 import { auditService } from './audit.service.js';
 
+function extractRoleIdString(role: unknown): string {
+  if (!role) return '';
+  if (typeof role === 'string') return role;
+  if (typeof role === 'object') {
+    if ('_id' in (role as Record<string, unknown>) && (role as { _id: unknown })._id) {
+      return String((role as { _id: unknown })._id);
+    }
+    if ('id' in (role as Record<string, unknown>) && (role as { id: unknown }).id) {
+      return String((role as { id: unknown }).id);
+    }
+  }
+  return String(role);
+}
+
 export interface CreateSessionParams {
   user: User & { _id: mongoose.Types.ObjectId };
   loginMethod: 'Email' | 'Mobile Number';
@@ -117,7 +131,7 @@ class SessionService {
     // 4. Generate short-lived JWT Access Token
     const accessToken = generateAccessToken({
       userId: params.user._id.toString(),
-      roleId: params.user.roleId.toString(),
+      roleId: extractRoleIdString(params.user.roleId),
       sessionId: sessionDoc.sessionId,
     });
 
@@ -225,6 +239,7 @@ class SessionService {
     // Verify user eligibility
     const user = await (UserModel as mongoose.Model<User>)
       .findOne({ _id: tokenRecord.userId })
+      .populate('roleId')
       .exec();
 
     if (!user || user.accountStatus !== 'Active') {
@@ -275,15 +290,20 @@ class SessionService {
     await session.save();
 
     // Issue new Access Token
+    const roleIdString = extractRoleIdString(user.roleId);
     const accessToken = generateAccessToken({
       userId: user._id.toString(),
-      roleId: user.roleId.toString(),
+      roleId: roleIdString,
       sessionId: session.sessionId,
     });
 
+    const roleObjectId = mongoose.isValidObjectId(roleIdString)
+      ? new mongoose.Types.ObjectId(roleIdString)
+      : undefined;
+
     await auditService.log({
       userId: user._id,
-      roleId: user.roleId,
+      roleId: roleObjectId,
       actionCode: 'AUTH_REFRESH_TOKEN_ROTATED',
       module: 'Authentication',
       actionTitle: 'Refresh Token Rotated',
@@ -293,10 +313,16 @@ class SessionService {
       actionStatus: 'Success',
     });
 
+    const userObj = user.toObject();
+
     return {
       accessToken,
       rawRefreshToken: newRawToken,
-      user: user as unknown as User & { _id: mongoose.Types.ObjectId },
+      user: {
+        ...userObj,
+        role: user.roleId,
+        roleId: user.roleId,
+      } as unknown as User & { _id: mongoose.Types.ObjectId },
     };
   }
 

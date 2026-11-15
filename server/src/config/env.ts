@@ -16,6 +16,49 @@ const envSchema = z.object({
   RAZORPAY_KEY_ID: z.string().default(''),
 
   RAZORPAY_KEY_SECRET: z.string().default(''),
+
+  // Email / SMTP Configuration
+  SMTP_HOST: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() === '' ? undefined : val),
+    z.string().optional(),
+  ),
+
+  SMTP_PORT: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() === '' ? undefined : val),
+    z.coerce.number().int().positive().default(587),
+  ),
+
+  SMTP_SECURE: z.preprocess(
+    (val) =>
+      val === 'true' || val === true ? true : val === 'false' || val === false ? false : undefined,
+    z.boolean().optional(),
+  ),
+
+  SMTP_USER: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() === '' ? undefined : val),
+    z.string().optional(),
+  ),
+
+  SMTP_PASS: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() === '' ? undefined : val),
+    z.string().optional(),
+  ),
+
+  SMTP_FROM_EMAIL: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() !== '' ? val.trim() : 'no-reply@parkease.com'),
+    z.string().email().default('no-reply@parkease.com'),
+  ),
+
+  SMTP_FROM_NAME: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() !== '' ? val.trim() : 'ParkEase'),
+    z.string().default('ParkEase'),
+  ),
+
+  // Mailpit local development executable path (optional)
+  MAILPIT_PATH: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() === '' ? undefined : val),
+    z.string().optional(),
+  ),
 });
 
 export const env = envSchema.parse(process.env);

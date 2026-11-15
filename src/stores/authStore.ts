@@ -9,6 +9,7 @@ interface AuthState {
   isLoading: boolean;
   setAuth: (user: User, accessToken: string) => void;
   setAccessToken: (accessToken: string, user?: User) => void;
+  updateUser: (user: User) => void;
   clearAuth: () => void;
   setLoading: (isLoading: boolean) => void;
   checkAuth: () => Promise<void>;
@@ -38,11 +39,27 @@ export const useAuthStore = create<AuthState>((set) => ({
     }),
 
   setAccessToken: (accessToken: string, user?: User) =>
+    set((state) => {
+      const resolvedUser = user ?? state.user;
+      const hasResolvedRole = Boolean(
+        resolvedUser?.role ||
+          (resolvedUser?.roleId && typeof resolvedUser.roleId === 'object'),
+      );
+      return {
+        accessToken,
+        user: resolvedUser,
+        isAuthenticated: true,
+        isLoading: hasResolvedRole ? false : state.isLoading,
+      };
+    }),
+
+  updateUser: (user: User) =>
     set((state) => ({
-      accessToken,
-      user: user ?? state.user,
-      isAuthenticated: true,
-      isLoading: false,
+      ...state,
+      user: {
+        ...state.user,
+        ...user,
+      },
     })),
 
   clearAuth: () =>
@@ -63,11 +80,12 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ isLoading: true });
       const response = await getMe();
       if (response.success && response.data?.user) {
-        set({
-          user: response.data.user,
+        set((state) => ({
+          user: response.data!.user,
+          accessToken: state.accessToken,
           isAuthenticated: true,
           isLoading: false,
-        });
+        }));
       } else {
         set({
           user: null,

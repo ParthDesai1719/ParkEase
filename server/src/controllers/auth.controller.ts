@@ -80,7 +80,11 @@ export async function requestRegisterOtp(
       userAgent: req.headers['user-agent'],
     });
 
-    sendSuccess(res, result.message);
+    sendSuccess(res, result.message, {
+      cooldownSeconds: result.cooldownSeconds,
+      email: result.email,
+      mobileNumber: result.mobileNumber,
+    });
   } catch (error) {
     next(error);
   }
@@ -105,6 +109,7 @@ export async function verifyRegisterOtp(
       'Registration successful.',
       {
         user: result.user,
+        vehicle: result.vehicle,
         accessToken: result.accessToken,
         refreshToken: result.refreshToken,
       },

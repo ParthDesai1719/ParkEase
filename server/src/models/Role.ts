@@ -1,4 +1,5 @@
 import mongoose, { type InferSchemaType } from 'mongoose';
+import './Permission.js';
 
 const roleSchema = new mongoose.Schema(
   {
