@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Building2,
   PlusCircle,
+  Shield,
   ShieldCheck,
   Users,
   Layers,
@@ -20,12 +21,24 @@ import {
   FileText,
   AlertTriangle,
   Bell,
+  Settings,
+  UserCheck,
+  Car,
+  CreditCard,
+  Mail,
+  MessageSquareQuote,
+  TrendingUp,
+  Heart,
+  Navigation,
+  ShieldAlert,
+  Headphones,
 } from 'lucide-react';
 import { Header } from '@/components/layout/Header';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useAuthStore } from '@/stores/authStore';
 import { getRoleCode } from '@/components/auth/ProtectedRoute';
+import { playPendingGreetingIfAny } from '@/utils/voiceGreeting';
 import { cn } from '@/lib/utils';
 
 interface NavItem {
@@ -50,16 +63,21 @@ export const DashboardLayout: React.FC = () => {
   const isSecurity = roleCode === 'SECURITY_STAFF' || roleCode === 'SECURITY';
   const isLayoutDesigner = location.pathname.includes('/layout');
 
+  // Trigger brand personalized voice greeting for any role upon dashboard landing
+  React.useEffect(() => {
+    playPendingGreetingIfAny();
+  }, []);
+
   // Navigation Items by Role (Notifications kept exclusively in Header)
   const customerNavItems: NavItem[] = [
     {
-      label: 'Dashboard Overview',
+      label: 'Dashboard',
       href: '/customer/dashboard',
       icon: LayoutDashboard,
       exact: true,
     },
     {
-      label: 'Search Parking',
+      label: 'Find Parking',
       href: '/customer/search',
       icon: Search,
       exact: true,
@@ -68,6 +86,24 @@ export const DashboardLayout: React.FC = () => {
       label: 'My Bookings',
       href: '/customer/bookings',
       icon: CalendarCheck,
+    },
+    {
+      label: 'Saved Parking',
+      href: '/customer/favourites',
+      icon: Heart,
+      exact: true,
+    },
+    {
+      label: 'Reviews & Ratings',
+      href: '/customer/reviews',
+      icon: MessageSquareQuote,
+      exact: true,
+    },
+    {
+      label: 'Helpline & Support',
+      href: '/customer/helpline',
+      icon: Headphones,
+      exact: true,
     },
     {
       label: 'Profile & Vehicles',
@@ -95,9 +131,39 @@ export const DashboardLayout: React.FC = () => {
       icon: Grid3X3,
     },
     {
+      label: 'Live Vehicle Locator',
+      href: '/owner/live-vehicles',
+      icon: Navigation,
+    },
+    {
+      label: 'Vehicle Management',
+      href: '/owner/vehicles',
+      icon: Car,
+    },
+    {
       label: 'Booking Management',
       href: '/owner/bookings',
       icon: CalendarCheck,
+    },
+    {
+      label: 'Revenue',
+      href: '/owner/revenue',
+      icon: CreditCard,
+    },
+    {
+      label: 'Reviews',
+      href: '/owner/reviews',
+      icon: MessageSquareQuote,
+    },
+    {
+      label: 'Incident Reports',
+      href: '/owner/incidents',
+      icon: ShieldAlert,
+    },
+    {
+      label: 'Email Center',
+      href: '/owner/email-center',
+      icon: Mail,
     },
     {
       label: 'Staff Management',
@@ -115,6 +181,11 @@ export const DashboardLayout: React.FC = () => {
       icon: ShieldCheck,
       badge: 'Verified',
     },
+    {
+      label: 'Business Settings',
+      href: '/owner/settings',
+      icon: Settings,
+    },
   ];
 
   const adminNavItems: NavItem[] = [
@@ -125,9 +196,54 @@ export const DashboardLayout: React.FC = () => {
       exact: true,
     },
     {
+      label: 'Analytics',
+      href: '/admin/analytics',
+      icon: TrendingUp,
+    },
+    {
+      label: 'Reports',
+      href: '/admin/reports',
+      icon: FileText,
+    },
+    {
+      label: 'User Management',
+      href: '/admin/users',
+      icon: UserCheck,
+    },
+    {
       label: 'Owner Applications',
       href: '/admin/owners',
       icon: Users,
+    },
+    {
+      label: 'Security Staff',
+      href: '/admin/staff',
+      icon: Shield,
+    },
+    {
+      label: 'Operations & Bookings',
+      href: '/admin/bookings',
+      icon: CalendarCheck,
+    },
+    {
+      label: 'Live Vehicle Locator',
+      href: '/admin/live-vehicles',
+      icon: Car,
+    },
+    {
+      label: 'Finance & Payments',
+      href: '/admin/finance',
+      icon: CreditCard,
+    },
+    {
+      label: 'Communication Center',
+      href: '/admin/email-center',
+      icon: Mail,
+    },
+    {
+      label: 'Reviews & Moderation',
+      href: '/admin/reviews',
+      icon: MessageSquareQuote,
     },
     {
       label: 'Facility Submissions',
@@ -138,6 +254,12 @@ export const DashboardLayout: React.FC = () => {
       label: 'Official Parking Lots',
       href: '/admin/parking-lots',
       icon: Layers,
+    },
+    {
+      label: 'Platform Settings',
+      href: '/admin/settings',
+      icon: Settings,
+      exact: true,
     },
     {
       label: 'Admin Profile',
@@ -167,6 +289,12 @@ export const DashboardLayout: React.FC = () => {
       exact: true,
     },
     {
+      label: '2D Live Viewer',
+      href: '/security/live-viewer',
+      icon: Grid3X3,
+      exact: true,
+    },
+    {
       label: 'Walk-in Booking',
       href: '/security/walk-in',
       icon: UserPlus,
@@ -182,6 +310,12 @@ export const DashboardLayout: React.FC = () => {
       label: 'Incident Reports',
       href: '/security/incidents',
       icon: AlertTriangle,
+      exact: true,
+    },
+    {
+      label: 'Email Facility Owner',
+      href: '/security/emailer',
+      icon: Mail,
       exact: true,
     },
     {

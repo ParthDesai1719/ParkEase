@@ -110,6 +110,23 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    suspensionReason: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    suspendedAt: {
+      type: Date,
+      default: null,
+    },
+
+    suspendedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
   },
   {
     collection: 'users',

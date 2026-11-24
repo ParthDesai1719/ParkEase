@@ -190,7 +190,7 @@ export async function collectOverstayCash(
 ): Promise<void> {
   try {
     const userId = req.userId;
-    const parkingLotId = req.parkingLotId;
+    const parkingLotId = req.parkingLotId || req.body.parkingLotId || (req.headers['x-parking-lot-id'] as string) || (req.query.parkingLotId as string);
     const { bookingId, amount, notes } = req.body as {
       bookingId?: string;
       amount?: number;
@@ -778,7 +778,7 @@ export async function updateIncidentStatus(
     const rawId = req.params.id;
     const incidentId = Array.isArray(rawId) ? rawId[0] : rawId;
     const { status, resolutionNotes } = req.body as {
-      status?: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed';
+      status?: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed' | 'Pending' | 'Resolving' | string;
       resolutionNotes?: string;
     };
 
@@ -802,6 +802,42 @@ export async function updateIncidentStatus(
     });
 
     sendSuccess(res, `Incident marked as ${status}.`, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Controller to append a communication response to an incident by Security Staff.
+ */
+export async function addIncidentResponse(
+  req: SecurityAuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const rawId = req.params.id;
+    const incidentId = Array.isArray(rawId) ? rawId[0] : rawId;
+    const { message, attachments } = req.body as { message?: string; attachments?: string[] };
+
+    if (!incidentId) {
+      throw new AppError('Incident ID is required.', 400, 'INCIDENT_ID_REQUIRED');
+    }
+    if (!message || message.trim().length === 0) {
+      throw new AppError('Response message is required.', 400, 'MESSAGE_REQUIRED');
+    }
+    if (!req.userId) {
+      throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+    }
+
+    const result = await securityService.addIncidentResponse({
+      staffUserId: req.userId,
+      incidentId,
+      message,
+      ...(attachments !== undefined ? { attachments } : {}),
+    });
+
+    sendSuccess(res, 'Response recorded successfully.', result);
   } catch (error) {
     next(error);
   }
@@ -986,6 +1022,233 @@ export async function exportMovementLogsCsv(
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="movement-logs-${parkingLotId}-${Date.now()}.csv"`);
     res.status(200).send(csvContent);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Controller to confirm collection of cash payment for a deferred customer booking extension at exit.
+ */
+export async function confirmCashExtensionPayment(
+  req: SecurityAuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = req.userId;
+    const parkingLotId = req.parkingLotId || req.body.parkingLotId || (req.headers['x-parking-lot-id'] as string) || (req.query.parkingLotId as string);
+    const rawBookingParam = req.params.bookingId;
+    const bookingId = (Array.isArray(rawBookingParam) ? rawBookingParam[0] : rawBookingParam) || req.body.bookingId;
+    const { paymentId, notes } = req.body as { paymentId?: string; notes?: string };
+
+    if (!userId) {
+      throw new AppError('Authentication required.', 401, 'E006');
+    }
+
+    if (!parkingLotId) {
+      throw new AppError('Parking lot ID is required.', 400, 'PARKING_LOT_REQUIRED');
+    }
+
+    if (!bookingId) {
+      throw new AppError('Booking ID is required.', 400, 'BOOKING_ID_REQUIRED');
+    }
+
+    const result = await securityService.confirmCashExtensionPayment({
+      staffUserId: userId,
+      parkingLotId,
+      bookingId,
+      ...(paymentId ? { paymentId } : {}),
+      ...(notes ? { notes } : {}),
+    });
+
+    sendSuccess(res, result.message, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Controller for unified exit cash settlement.
+ * Settles both pending cash extensions and live overstay penalty fees in one single action,
+ * returning the itemized official receipt and enabling exit authorization.
+ */
+export async function settleExitCash(
+  req: SecurityAuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = req.userId;
+    const parkingLotId = req.parkingLotId || req.body.parkingLotId || (req.headers['x-parking-lot-id'] as string) || (req.query.parkingLotId as string);
+    const rawBookingParam = req.params.bookingId;
+    const bookingId = (Array.isArray(rawBookingParam) ? rawBookingParam[0] : rawBookingParam) || req.body.bookingId;
+    const { notes } = req.body as { notes?: string };
+
+    if (!userId) {
+      throw new AppError('Authentication required.', 401, 'E006');
+    }
+
+    if (!parkingLotId) {
+      throw new AppError('Parking lot ID is required.', 400, 'PARKING_LOT_REQUIRED');
+    }
+
+    if (!bookingId) {
+      throw new AppError('Booking ID is required.', 400, 'BOOKING_ID_REQUIRED');
+    }
+
+    const result = await securityService.settleExitCashPayments({
+      staffUserId: userId,
+      parkingLotId,
+      bookingId,
+      ...(notes ? { notes } : {}),
+    });
+
+    sendSuccess(res, result.message, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Controller to record failure or refusal of customer to pay extension cash at exit.
+ */
+export async function recordUnpaidCashExtension(
+  req: SecurityAuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = req.userId;
+    const parkingLotId = req.parkingLotId;
+    const rawBookingParam = req.params.bookingId;
+    const bookingId = (Array.isArray(rawBookingParam) ? rawBookingParam[0] : rawBookingParam) || req.body.bookingId;
+    const { notes } = req.body as { notes?: string };
+
+    if (!userId) {
+      throw new AppError('Authentication required.', 401, 'E006');
+    }
+
+    if (!parkingLotId) {
+      throw new AppError('Parking lot ID is required.', 400, 'PARKING_LOT_REQUIRED');
+    }
+
+    if (!bookingId) {
+      throw new AppError('Booking ID is required.', 400, 'BOOKING_ID_REQUIRED');
+    }
+
+    const result = await securityService.recordUnpaidCashExtension({
+      staffUserId: userId,
+      parkingLotId,
+      bookingId,
+      ...(notes ? { notes } : {}),
+    });
+
+    sendSuccess(res, result.message, result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Controller to calculate tariff and validate eligibility for Walk-in booking extension.
+ */
+export async function getWalkInExtensionQuote(
+  req: SecurityAuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = req.userId;
+    const parkingLotId = req.parkingLotId;
+    const rawBookingParam = req.params.bookingId;
+    const bookingId = (Array.isArray(rawBookingParam) ? rawBookingParam[0] : rawBookingParam) || (req.query.bookingId as string);
+    const additionalMinutes = Number(req.query.additionalMinutes);
+
+    if (!userId) {
+      throw new AppError('Authentication required.', 401, 'E006');
+    }
+
+    if (!parkingLotId) {
+      throw new AppError('Parking lot ID is required.', 400, 'PARKING_LOT_REQUIRED');
+    }
+
+    if (!bookingId) {
+      throw new AppError('Booking ID is required.', 400, 'BOOKING_ID_REQUIRED');
+    }
+
+    if (!additionalMinutes || isNaN(additionalMinutes)) {
+      throw new AppError('Additional duration in minutes is required.', 400, 'MINUTES_REQUIRED');
+    }
+
+    const result = await securityService.getWalkInExtensionQuote({
+      staffUserId: userId,
+      parkingLotId,
+      bookingId,
+      additionalMinutes,
+    });
+
+    sendSuccess(res, 'Walk-in extension quote calculated successfully.', result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Controller to process Walk-in booking extension with immediate cash payment collection.
+ */
+export async function processWalkInExtension(
+  req: SecurityAuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = req.userId;
+    const parkingLotId = req.parkingLotId;
+    const rawBookingParam = req.params.bookingId;
+    const bookingId = (Array.isArray(rawBookingParam) ? rawBookingParam[0] : rawBookingParam) || req.body.bookingId;
+    const { additionalMinutes, amountCollected, confirmCashReceived, notes } = req.body as {
+      additionalMinutes?: number;
+      amountCollected?: number;
+      confirmCashReceived?: boolean;
+      notes?: string;
+    };
+
+    if (!userId) {
+      throw new AppError('Authentication required.', 401, 'E006');
+    }
+
+    if (!parkingLotId) {
+      throw new AppError('Parking lot ID is required.', 400, 'PARKING_LOT_REQUIRED');
+    }
+
+    if (!bookingId) {
+      throw new AppError('Booking ID is required.', 400, 'BOOKING_ID_REQUIRED');
+    }
+
+    if (!additionalMinutes || typeof additionalMinutes !== 'number') {
+      throw new AppError('Additional duration in minutes is required.', 400, 'MINUTES_REQUIRED');
+    }
+
+    if (amountCollected === undefined || typeof amountCollected !== 'number') {
+      throw new AppError('Amount collected is required.', 400, 'AMOUNT_REQUIRED');
+    }
+
+    if (!confirmCashReceived) {
+      throw new AppError('Confirmation of physical cash collection is required.', 400, 'CASH_NOT_CONFIRMED');
+    }
+
+    const result = await securityService.processWalkInExtension({
+      staffUserId: userId,
+      parkingLotId,
+      bookingId,
+      additionalMinutes,
+      amountCollected,
+      confirmCashReceived: Boolean(confirmCashReceived),
+      ...(notes ? { notes } : {}),
+    });
+
+    sendSuccess(res, result.message, result);
   } catch (error) {
     next(error);
   }

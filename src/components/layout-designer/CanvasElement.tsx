@@ -234,6 +234,18 @@ export const CanvasElement: React.FC<CanvasElementProps> = ({
             statusLabel = 'MAINTENANCE';
             statusBadgeClass = 'text-slate-300 bg-slate-900/90 border border-slate-600/50';
             carIconClass = 'text-slate-400';
+          } else if (effectiveStatus === 'Barrier Open' || element.color === '#38bdf8') {
+            bookingFill = 'rgba(56, 189, 248, 0.35)';
+            bookingStroke = '#38bdf8';
+            statusLabel = 'BARRIER OPEN';
+            statusBadgeClass = 'text-sky-200 bg-sky-950/95 border border-sky-400 font-bold';
+            carIconClass = 'text-sky-300';
+          } else if (effectiveStatus === 'Overstay') {
+            bookingFill = 'rgba(220, 38, 38, 0.35)';
+            bookingStroke = '#dc2626';
+            statusLabel = 'OVERSTAY';
+            statusBadgeClass = 'text-red-200 bg-red-950/95 border border-red-500 font-black animate-pulse';
+            carIconClass = 'text-red-300';
           } else if (effectiveStatus === 'Occupied') {
             bookingFill = 'rgba(239, 68, 68, 0.26)';
             bookingStroke = '#ef4444';
@@ -246,12 +258,39 @@ export const CanvasElement: React.FC<CanvasElementProps> = ({
             statusLabel = 'RESERVED';
             statusBadgeClass = 'text-amber-300 bg-amber-950/90 border border-amber-500/40';
             carIconClass = 'text-amber-400';
+          } else if (effectiveStatus === 'Available') {
+            if ((element as any).isOverflow) {
+              bookingFill = 'rgba(100, 116, 139, 0.22)';
+              bookingStroke = '#64748b';
+              statusLabel = 'OVERFLOW (FROZEN)';
+              statusBadgeClass = 'text-slate-300 bg-slate-800/90 border border-slate-600/60 font-mono';
+              carIconClass = 'text-slate-400';
+            } else {
+              bookingFill = 'rgba(16, 185, 129, 0.22)';
+              bookingStroke = '#10b981';
+              statusLabel = 'AVAILABLE';
+              statusBadgeClass = 'text-emerald-300 bg-emerald-950/90 border border-emerald-500/40';
+              carIconClass = 'text-emerald-400';
+            }
           } else if (!isCompatible) {
             bookingFill = 'rgba(71, 85, 105, 0.18)';
             bookingStroke = '#475569';
             statusLabel = element.supportedVehicleType ? `${element.supportedVehicleType.toUpperCase()} ONLY` : 'INCOMPATIBLE';
             statusBadgeClass = 'text-slate-400 bg-slate-900/80 border border-slate-700';
             carIconClass = 'text-slate-500';
+          }
+        }
+
+        let countdownBadge: string | null = null;
+        if (isBooking && element.expectedAvailableAt && (effectiveStatus === 'Occupied' || effectiveStatus === 'Reserved')) {
+          const availTime = new Date(element.expectedAvailableAt).getTime();
+          const diffSec = Math.floor((availTime - Date.now()) / 1000);
+          if (diffSec > 0) {
+            const m = Math.floor(diffSec / 60);
+            const s = diffSec % 60;
+            countdownBadge = `${m}:${s < 10 ? '0' : ''}${s}`;
+          } else {
+            countdownBadge = 'Soon';
           }
         }
 
@@ -264,7 +303,13 @@ export const CanvasElement: React.FC<CanvasElementProps> = ({
               rx={4}
               fill={
                 isBooking
-                  ? bookingFill
+                  ? (element as any).isOverflow && (effectiveStatus === 'Available' || !effectiveStatus)
+                    ? 'rgba(100, 116, 139, 0.22)'
+                    : bookingFill
+                  : (element as any).isOverflow
+                  ? isSelected
+                    ? 'rgba(100, 116, 139, 0.40)'
+                    : 'rgba(100, 116, 139, 0.22)'
                   : isZoneHighlighted && zoneTheme
                   ? zoneTheme.fill
                   : isEdit
@@ -275,9 +320,13 @@ export const CanvasElement: React.FC<CanvasElementProps> = ({
               }
               stroke={
                 isBooking
-                  ? bookingStroke
+                  ? (element as any).isOverflow && (effectiveStatus === 'Available' || !effectiveStatus)
+                    ? '#64748b'
+                    : bookingStroke
                   : isSelected
                   ? '#3b82f6'
+                  : (element as any).isOverflow
+                  ? '#64748b'
                   : isZoneHighlighted && zoneTheme
                   ? zoneTheme.border
                   : isEdit
@@ -286,7 +335,9 @@ export const CanvasElement: React.FC<CanvasElementProps> = ({
               }
               strokeWidth={isSelected ? 3 : isBooking ? 2 : isZoneHighlighted ? 2 : 1.5}
               strokeDasharray={
-                isBooking
+                (element as any).isOverflow
+                  ? '5 3'
+                  : isBooking
                   ? effectiveStatus === 'Under Maintenance' || !isCompatible
                     ? '4 3'
                     : undefined
@@ -303,7 +354,9 @@ export const CanvasElement: React.FC<CanvasElementProps> = ({
               x2={width - 4}
               y2={height - 1}
               stroke={
-                isBooking
+                (element as any).isOverflow
+                  ? '#94a3b8'
+                  : isBooking
                   ? bookingStroke
                   : isZoneHighlighted && zoneTheme
                   ? zoneTheme.color
@@ -327,10 +380,16 @@ export const CanvasElement: React.FC<CanvasElementProps> = ({
                   >
                     {zoneCode || slotNumber?.match(/^([A-Za-z]+)/)?.[1] || 'A'}
                   </span>
-                  <span className="text-[9px] text-slate-300 font-mono">
-                    {isBooking && element.supportedVehicleType
-                      ? element.supportedVehicleType
-                      : `${width}×${height}`}
+                  <span className="text-[9px] text-slate-300 font-mono flex items-center gap-1">
+                    {(element as any).isOverflow ? (
+                      <span className="text-[7.5px] font-bold text-slate-200 bg-slate-800/90 border border-slate-600/70 rounded px-1 py-0.2 tracking-wider">
+                        OVERFLOW
+                      </span>
+                    ) : isBooking && element.supportedVehicleType ? (
+                      element.supportedVehicleType
+                    ) : (
+                      `${width}×${height}`
+                    )}
                   </span>
                 </div>
 
@@ -341,21 +400,42 @@ export const CanvasElement: React.FC<CanvasElementProps> = ({
                       {slotNumber || 'SLOT'}
                     </span>
                   </div>
-                  {label && (
+                  {(element as any).vehicleNumber ? (
+                    <span className="mt-0.5 text-[8px] font-mono font-black text-amber-300 bg-black/85 px-1 py-0.5 rounded border border-amber-500/40 tracking-wider truncate max-w-[95%]">
+                      {(element as any).vehicleNumber}
+                    </span>
+                  ) : label ? (
                     <span className="text-[9px] text-slate-300 truncate max-w-[80px]">
                       {label}
                     </span>
-                  )}
+                  ) : null}
                 </div>
 
                 <div className="w-full">
                   {isEdit ? (
-                    <span className="text-[8px] uppercase tracking-wider font-semibold text-emerald-400 block bg-emerald-950/60 rounded px-1">
-                      Mapped
-                    </span>
+                    (element as any).isOverflow ? (
+                      <span className="text-[8px] uppercase tracking-wider font-bold text-slate-300 block bg-slate-800/80 border border-slate-600/60 rounded px-1">
+                        OVERFLOW
+                      </span>
+                    ) : (
+                      <span className="text-[8px] uppercase tracking-wider font-semibold text-emerald-400 block bg-emerald-950/60 rounded px-1">
+                        Mapped
+                      </span>
+                    )
                   ) : isBooking ? (
-                    <span className={cn('text-[8px] font-bold tracking-wider block rounded py-0.5 px-1 truncate', statusBadgeClass)}>
-                      {statusLabel}
+                    <div className="flex flex-col items-center gap-0.5 w-full">
+                      <span className={cn('text-[8px] font-bold tracking-wider block rounded py-0.5 px-1 truncate w-full', statusBadgeClass)}>
+                        {statusLabel}
+                      </span>
+                      {countdownBadge && (
+                        <span className="text-[7px] font-mono font-bold text-amber-300 bg-amber-950/90 border border-amber-500/40 rounded px-1 py-0.5 whitespace-nowrap block w-full truncate">
+                          ⏳ in {countdownBadge}
+                        </span>
+                      )}
+                    </div>
+                  ) : (element as any).isOverflow ? (
+                    <span className="text-[9px] font-bold text-slate-300 block bg-slate-800/80 border border-slate-600/60 rounded py-0.5">
+                      OVERFLOW
                     </span>
                   ) : (
                     <span className="text-[9px] font-bold text-emerald-500 block bg-emerald-500/10 rounded py-0.5">

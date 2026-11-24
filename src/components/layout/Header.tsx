@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Bell, LogOut, Menu, User as UserIcon, FileText, Volume2, CalendarCheck, LayoutDashboard } from 'lucide-react';
+import { Bell, LogOut, Menu, User as UserIcon, FileText, Volume2, VolumeX, CalendarCheck, LayoutDashboard } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -28,6 +28,11 @@ import {
 import { playNotificationSound } from '@/lib/notificationSound';
 import { getSocket } from '@/lib/socket';
 import { getAvatarUrl } from '@/api/profile.api';
+import {
+  playPendingGreetingIfAny,
+  isVoiceGreetingEnabled,
+  setVoiceGreetingEnabled,
+} from '@/utils/voiceGreeting';
 
 export interface HeaderProps {
   variant?: 'public' | 'auth' | 'authenticated' | 'auto';
@@ -78,8 +83,16 @@ export const Header: React.FC<HeaderProps> = ({ variant = 'auto', className }) =
   const [recentNotifications, setRecentNotifications] = React.useState<AppNotification[]>([]);
   const [isNotifOpen, setIsNotifOpen] = React.useState(false);
   const [isBellRinging, setIsBellRinging] = React.useState(false);
+  const [voiceEnabled, setVoiceEnabled] = React.useState<boolean>(isVoiceGreetingEnabled);
   const recentNotifIdsRef = React.useRef<Set<string>>(new Set());
   const ringTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Play queued welcome greeting on successful login/registration landing (runs once per auth session)
+  React.useEffect(() => {
+    if (isAuthenticated) {
+      playPendingGreetingIfAny();
+    }
+  }, [isAuthenticated]);
 
   const triggerBellRing = React.useCallback(() => {
     setIsBellRinging(false);
@@ -345,20 +358,6 @@ export const Header: React.FC<HeaderProps> = ({ variant = 'auto', className }) =
                   )}
                 </div>
                 <div className="flex items-center gap-2.5">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      playNotificationSound();
-                      triggerBellRing();
-                      toast.success('Ringing notification chime.');
-                    }}
-                    className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground font-medium cursor-pointer transition-colors"
-                    title="Test notification bell chime"
-                  >
-                    <Volume2 className="h-3 w-3" />
-                    <span>Test Chime</span>
-                  </button>
                   {unreadCount > 0 && (
                     <button
                       type="button"
@@ -540,6 +539,28 @@ export const Header: React.FC<HeaderProps> = ({ variant = 'auto', className }) =
                   <span>Business Documents</span>
                 </DropdownMenuItem>
               )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="cursor-pointer text-xs flex items-center justify-between"
+                onClick={() => {
+                  const nextState = !voiceEnabled;
+                  setVoiceEnabled(nextState);
+                  setVoiceGreetingEnabled(nextState);
+                  toast.success(nextState ? 'Voice greetings enabled.' : 'Voice greetings muted.');
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  {voiceEnabled ? (
+                    <Volume2 className="h-4 w-4 text-primary" />
+                  ) : (
+                    <VolumeX className="h-4 w-4 text-muted-foreground" />
+                  )}
+                  <span>Voice Greeting</span>
+                </div>
+                <Badge variant={voiceEnabled ? 'default' : 'outline'} className="text-[10px] px-1.5 py-0 h-4">
+                  {voiceEnabled ? 'On' : 'Muted'}
+                </Badge>
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="cursor-pointer text-destructive focus:text-destructive"

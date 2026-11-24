@@ -14,8 +14,9 @@ const submissionPhotosDir = path.resolve(uploadsRoot, 'submissions', 'photos');
 const submissionPlansDir = path.resolve(uploadsRoot, 'submissions', 'plans');
 const avatarsDir = path.resolve(uploadsRoot, 'avatars');
 export const incidentUploadsDir = path.resolve(uploadsRoot, 'incidents');
+export const brandingDir = path.resolve(uploadsRoot, 'branding');
 
-for (const dir of [ownerUploadsDir, submissionPhotosDir, submissionPlansDir, avatarsDir, incidentUploadsDir]) {
+for (const dir of [ownerUploadsDir, submissionPhotosDir, submissionPlansDir, avatarsDir, incidentUploadsDir, brandingDir]) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -229,5 +230,59 @@ export const incidentImagesUpload = multer({
     files: 5, // Maximum 5 images per incident
   },
 });
+
+// Platform Branding Logo Upload configuration (JPG, PNG, WebP, SVG, max 5MB)
+const ALLOWED_LOGO_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/svg+xml',
+]);
+const ALLOWED_LOGO_EXTENSIONS = new Set(['.jpeg', '.jpg', '.png', '.webp', '.svg']);
+
+const logoFileFilter = (
+  _req: Request,
+  file: Express.Multer.File,
+  cb: FileFilterCallback,
+): void => {
+  const mime = file.mimetype.toLowerCase();
+  const rawExt = path.extname(file.originalname).toLowerCase();
+  if (!ALLOWED_LOGO_MIME_TYPES.has(mime) || !ALLOWED_LOGO_EXTENSIONS.has(rawExt)) {
+    return cb(
+      new AppError(
+        'Invalid file type. Only JPG, PNG, WebP, and SVG images are permitted for logos.',
+        400,
+        'INVALID_IMAGE_TYPE',
+      ),
+    );
+  }
+  cb(null, true);
+};
+
+const logoStorage = multer.diskStorage({
+  destination: (_req: Request, _file: Express.Multer.File, cb) => {
+    if (!fs.existsSync(brandingDir)) {
+      fs.mkdirSync(brandingDir, { recursive: true });
+    }
+    cb(null, brandingDir);
+  },
+  filename: (_req: Request, file: Express.Multer.File, cb) => {
+    const rawExt = path.extname(file.originalname).toLowerCase();
+    const safeExt = ALLOWED_LOGO_EXTENSIONS.has(rawExt) ? rawExt : '.png';
+    const randomHex = crypto.randomBytes(8).toString('hex');
+    cb(null, `logo-${Date.now()}-${randomHex}${safeExt}`);
+  },
+});
+
+export const logoUpload = multer({
+  storage: logoStorage,
+  fileFilter: logoFileFilter,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB
+    files: 1,
+  },
+});
+
 
 

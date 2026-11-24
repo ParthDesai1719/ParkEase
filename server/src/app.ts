@@ -15,6 +15,7 @@ import notificationRoutes from './routes/notification.routes.js';
 import profileRoutes from './routes/profile.routes.js';
 import customerParkingRoutes from './routes/customerParking.routes.js';
 import securityRoutes from './routes/security.routes.js';
+import barrierRoutes from './routes/barrier.routes.js';
 
 const app = express();
 
@@ -63,6 +64,7 @@ app.use('/api/v1/owner/parking/submissions', facilitySubmissionRoutes);
 app.use('/api/v1/owner', ownerRoutes);
 app.use('/api/v1/customer/parking', customerParkingRoutes);
 app.use('/api/v1/security', securityRoutes);
+app.use('/api/v1/barrier', barrierRoutes);
 app.use('/api/v1/contact', contactRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 app.use('/api/v1/profile', profileRoutes);

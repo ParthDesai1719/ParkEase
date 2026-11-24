@@ -54,6 +54,7 @@ export interface User {
   preferredLanguage?: 'English' | 'Hindi' | 'Gujarati' | string;
   timezone?: string;
   lastLogin?: string | null;
+  isFirstLogin?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }

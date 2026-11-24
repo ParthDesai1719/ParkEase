@@ -5,9 +5,15 @@ import mongoose from 'mongoose';
 import { AuditLogModel } from '../models/AuditLog.js';
 import { NotificationModel } from '../models/Notification.js';
 import { OwnerApplicationModel, type OwnerApplication } from '../models/OwnerApplication.js';
-import { PaymentModel } from '../models/Payment.js';
+import { PaymentModel, type Payment } from '../models/Payment.js';
 import { RoleModel, type Role } from '../models/Role.js';
 import { UserModel, type User } from '../models/User.js';
+import { SessionModel, type Session } from '../models/Session.js';
+import { ParkingLotModel, type ParkingLot } from '../models/ParkingLot.js';
+import {
+  ParkingFacilitySubmissionModel,
+  type ParkingFacilitySubmission,
+} from '../models/ParkingFacilitySubmission.js';
 import { AppError } from '../utils/AppError.js';
 import { auditService } from './audit.service.js';
 import { emailService } from './email.service.js';
@@ -23,6 +29,10 @@ export interface DashboardOverviewMetrics {
 export interface GetOwnerApplicationsFilter {
   status?: string | undefined;
   search?: string | undefined;
+  feeStatus?: string | undefined;
+  accountStatus?: string | undefined;
+  approvedFrom?: string | undefined;
+  approvedTo?: string | undefined;
   page?: number | undefined;
   limit?: number | undefined;
 }
@@ -135,13 +145,69 @@ class AdminService {
     if (filter.search && filter.search.trim()) {
       const escapedSearch = filter.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const searchRegex = new RegExp(escapedSearch, 'i');
+
+      // Also search payment references
+      const matchingPayments = await (PaymentModel as mongoose.Model<Payment>)
+        .find({ paymentReference: searchRegex })
+        .select('_id')
+        .lean()
+        .exec();
+      const matchingPaymentIds = matchingPayments.map((p) => p._id);
+
       query.$or = [
         { applicationReference: searchRegex },
         { businessName: searchRegex },
         { ownerName: searchRegex },
         { businessEmail: searchRegex },
         { city: searchRegex },
+        ...(matchingPaymentIds.length ? [{ paymentId: { $in: matchingPaymentIds } }] : []),
       ];
+    }
+
+    // Filter by Registration Fee Status
+    if (filter.feeStatus && filter.feeStatus !== 'All') {
+      const feeStatusUpper = filter.feeStatus.toUpperCase();
+      const statusConditions = [
+        { paymentStatus: filter.feeStatus },
+        { paymentStatus: feeStatusUpper },
+        { paymentStatus: filter.feeStatus.toLowerCase() },
+      ];
+      if (filter.feeStatus === 'Paid' || filter.feeStatus === 'SUCCESSFUL') {
+        statusConditions.push({ paymentStatus: 'Success' }, { paymentStatus: 'SUCCESSFUL' });
+      }
+
+      const paymentsWithStatus = await (PaymentModel as mongoose.Model<any>)
+        .find({ $or: statusConditions })
+        .select('_id')
+        .lean()
+        .exec();
+      const feePaymentIds = paymentsWithStatus.map((p) => p._id);
+      query.paymentId = { $in: feePaymentIds };
+    }
+
+    // Filter by Owner Account Status
+    if (filter.accountStatus && filter.accountStatus !== 'All') {
+      const usersWithStatus = await (UserModel as mongoose.Model<any>)
+        .find({ accountStatus: filter.accountStatus })
+        .select('_id')
+        .lean()
+        .exec();
+      const userIdsWithStatus = usersWithStatus.map((u) => u._id);
+      query.applicantId = { $in: userIdsWithStatus };
+    }
+
+    // Filter by Approval Date Range
+    if (filter.approvedFrom || filter.approvedTo) {
+      const reviewedAtFilter: Record<string, Date> = {};
+      if (filter.approvedFrom) {
+        reviewedAtFilter.$gte = new Date(filter.approvedFrom);
+      }
+      if (filter.approvedTo) {
+        const toDate = new Date(filter.approvedTo);
+        toDate.setHours(23, 59, 59, 999);
+        reviewedAtFilter.$lte = toDate;
+      }
+      query.reviewedAt = reviewedAtFilter;
     }
 
     // Ensure Payment model is loaded for populate
@@ -156,6 +222,7 @@ class AdminService {
         .skip(skip)
         .limit(limit)
         .populate('paymentId', 'paymentReference amount paymentStatus paymentMethod createdAt')
+        .populate('applicantId', 'fullName email mobileNumber accountStatus emailVerified mobileVerified createdAt')
         .populate('reviewedBy', 'fullName email')
         .lean()
         .exec(),
@@ -226,7 +293,43 @@ class AdminService {
       }
     }
 
-    return application as unknown as OwnerApplication;
+    // Compute owner facility summary if applicant exists
+    let facilitiesSummary = {
+      totalLots: 0,
+      activeLots: 0,
+      suspendedLots: 0,
+      pendingSubmissions: 0,
+    };
+
+    const applicantId =
+      typeof application.applicantId === 'object' && application.applicantId
+        ? (application.applicantId as { _id?: mongoose.Types.ObjectId })._id
+        : application.applicantId;
+
+    if (applicantId) {
+      const [totalLots, activeLots, suspendedLots, pendingSubmissions] = await Promise.all([
+        (ParkingLotModel as mongoose.Model<any>).countDocuments({ ownerId: applicantId }),
+        (ParkingLotModel as mongoose.Model<any>).countDocuments({
+          ownerId: applicantId,
+          parkingStatus: 'Active',
+        }),
+        (ParkingLotModel as mongoose.Model<any>).countDocuments({
+          ownerId: applicantId,
+          parkingStatus: { $in: ['Suspended', 'Inactive', 'Temporarily Closed'] },
+        }),
+        (ParkingFacilitySubmissionModel as mongoose.Model<any>).countDocuments({
+          ownerId: applicantId,
+          submissionStatus: { $in: ['Submitted', 'Under Review', 'Changes Requested'] },
+        }),
+      ]);
+
+      facilitiesSummary = { totalLots, activeLots, suspendedLots, pendingSubmissions };
+    }
+
+    return {
+      ...(application as unknown as Record<string, unknown>),
+      facilitiesSummary,
+    } as unknown as OwnerApplication;
   }
 
   /**
@@ -755,6 +858,411 @@ class AdminService {
       hasPropertyProof: !!application.propertyProofUrl,
       parkingImagesCount: Array.isArray(application.parkingImageUrls) ? application.parkingImageUrls.length : 0,
     };
+  }
+
+  /**
+   * Retrieve full transaction details for the ₹999 OWNER_REGISTRATION payment.
+   * Safe view without revealing gateway secrets or signatures.
+   */
+  public async getOwnerApplicationPayment(id: string): Promise<Record<string, unknown>> {
+    const isObjectId = mongoose.Types.ObjectId.isValid(id);
+    const query: Record<string, unknown> = isObjectId
+      ? { $or: [{ _id: id }, { applicationReference: id }] }
+      : { applicationReference: id };
+
+    const application = await (OwnerApplicationModel as mongoose.Model<OwnerApplication>)
+      .findOne(query)
+      .lean()
+      .exec();
+
+    if (!application) {
+      throw new AppError('Owner application not found.', 404, 'E002');
+    }
+
+    let payment = null;
+    if (application.paymentId) {
+      payment = await (PaymentModel as mongoose.Model<Payment>)
+        .findById(application.paymentId)
+        .lean()
+        .exec();
+    }
+
+    if (!payment) {
+      payment = await (PaymentModel as mongoose.Model<Payment>)
+        .findOne({
+          $or: [
+            { ownerApplicationId: application._id },
+            { customerId: application.applicantId, paymentTypeCode: 'OWNER_REGISTRATION' },
+          ],
+        })
+        .lean()
+        .exec();
+    }
+
+    if (!payment) {
+      throw new AppError(
+        'Payment record for this owner registration was not found.',
+        404,
+        'PAYMENT_NOT_FOUND',
+      );
+    }
+
+    return {
+      _id: payment._id,
+      paymentReference: payment.paymentReference,
+      paymentType: 'Parking Owner Registration Fee',
+      paymentTypeCode: 'OWNER_REGISTRATION',
+      amount: payment.amount ?? application.registrationFeeAmount ?? 999,
+      currency: 'INR',
+      paymentMethod: payment.paymentMethod || 'RAZORPAY',
+      paymentStatus: payment.paymentStatus || 'SUCCESSFUL',
+      gatewayPaymentId: payment.gatewayPaymentId || null,
+      gatewayOrderId: payment.gatewayOrderId || null,
+      createdAt: payment.createdAt,
+      updatedAt: payment.updatedAt,
+      applicationReference: application.applicationReference,
+      businessName: application.businessName,
+      ownerName: application.ownerName,
+      ownerEmail: application.businessEmail,
+      ownerPhone: application.businessPhone,
+      ownerId: application.applicantId,
+    };
+  }
+
+  /**
+   * Retrieve facility counts and operational metrics for an Owner.
+   */
+  public async getOwnerFacilitiesSummary(ownerIdOrAppId: string): Promise<{
+    totalLots: number;
+    activeLots: number;
+    suspendedLots: number;
+    pendingSubmissions: number;
+    ownerUserId: string | null;
+  }> {
+    let ownerUserId: mongoose.Types.ObjectId | null = null;
+
+    if (mongoose.Types.ObjectId.isValid(ownerIdOrAppId)) {
+      const user = await (UserModel as mongoose.Model<User>).findById(ownerIdOrAppId).lean().exec();
+      if (user) {
+        ownerUserId = user._id as mongoose.Types.ObjectId;
+      }
+    }
+
+    if (!ownerUserId) {
+      const isObjectId = mongoose.Types.ObjectId.isValid(ownerIdOrAppId);
+      const query = isObjectId
+        ? { $or: [{ _id: ownerIdOrAppId }, { applicationReference: ownerIdOrAppId }] }
+        : { applicationReference: ownerIdOrAppId };
+
+      const app = await (OwnerApplicationModel as mongoose.Model<OwnerApplication>)
+        .findOne(query)
+        .lean()
+        .exec();
+      if (app && app.applicantId) {
+        ownerUserId = app.applicantId as mongoose.Types.ObjectId;
+      }
+    }
+
+    if (!ownerUserId) {
+      return {
+        totalLots: 0,
+        activeLots: 0,
+        suspendedLots: 0,
+        pendingSubmissions: 0,
+        ownerUserId: null,
+      };
+    }
+
+    const [totalLots, activeLots, suspendedLots, pendingSubmissions] = await Promise.all([
+      (ParkingLotModel as mongoose.Model<any>).countDocuments({ ownerId: ownerUserId }),
+      (ParkingLotModel as mongoose.Model<any>).countDocuments({
+        ownerId: ownerUserId,
+        parkingStatus: 'Active',
+      }),
+      (ParkingLotModel as mongoose.Model<any>).countDocuments({
+        ownerId: ownerUserId,
+        parkingStatus: { $in: ['Suspended', 'Inactive', 'Temporarily Closed'] },
+      }),
+      (ParkingFacilitySubmissionModel as mongoose.Model<any>).countDocuments({
+        ownerId: ownerUserId,
+        submissionStatus: { $in: ['Submitted', 'Under Review', 'Changes Requested'] },
+      }),
+    ]);
+
+    return {
+      totalLots,
+      activeLots,
+      suspendedLots,
+      pendingSubmissions,
+      ownerUserId: ownerUserId.toString(),
+    };
+  }
+
+  /**
+   * Suspend an approved Parking Owner account with mandatory reason and instant session revocation.
+   */
+  public async suspendOwner(
+    ownerIdOrAppId: string,
+    reason: string,
+    adminUserId: string,
+    adminRoleId?: string | null,
+    ipAddress?: string | null,
+    userAgent?: string | null,
+  ): Promise<User> {
+    if (!reason || reason.trim().length < 5) {
+      throw new AppError('Suspension reason must be at least 5 characters.', 400, 'INVALID_REASON');
+    }
+
+    let user: (User & mongoose.Document) | null = null;
+
+    if (mongoose.Types.ObjectId.isValid(ownerIdOrAppId)) {
+      user = await (UserModel as mongoose.Model<User>).findById(ownerIdOrAppId).exec();
+    }
+
+    if (!user) {
+      const isObjectId = mongoose.Types.ObjectId.isValid(ownerIdOrAppId);
+      const query = isObjectId
+        ? { $or: [{ _id: ownerIdOrAppId }, { applicationReference: ownerIdOrAppId }] }
+        : { applicationReference: ownerIdOrAppId };
+
+      const app = await (OwnerApplicationModel as mongoose.Model<OwnerApplication>)
+        .findOne(query)
+        .exec();
+      if (app && app.applicantId) {
+        user = await (UserModel as mongoose.Model<User>).findById(app.applicantId).exec();
+      }
+    }
+
+    if (!user) {
+      throw new AppError('Owner account not found.', 404, 'OWNER_NOT_FOUND');
+    }
+
+    if (user.accountStatus === 'Suspended') {
+      throw new AppError('Owner account is already suspended.', 400, 'ALREADY_SUSPENDED');
+    }
+
+    const previousStatus = user.accountStatus;
+    const adminObjectId = new mongoose.Types.ObjectId(adminUserId);
+
+    user.accountStatus = 'Suspended';
+    user.suspensionReason = reason.trim();
+    user.suspendedAt = new Date();
+    user.suspendedBy = adminObjectId;
+
+    await user.save();
+
+    // Revoke all active sessions immediately
+    await (SessionModel as mongoose.Model<Session>).updateMany(
+      { userId: user._id, sessionStatus: 'Active' },
+      {
+        sessionStatus: 'Revoked',
+        logoutReason: 'Account Suspended',
+        logoutTime: new Date(),
+        revokedAt: new Date(),
+        revokedBy: adminObjectId,
+      },
+    );
+
+    // In-app notification
+    await notificationService
+      .createNotification({
+        userId: user._id,
+        senderId: adminObjectId,
+        notificationType: 'Parking Owner Registration',
+        eventType: 'Customer Account Suspended',
+        title: 'Parking Owner Account Suspended',
+        message: `Your ParkEase Parking Owner account has been suspended by an administrator. Reason: ${reason.trim()}`,
+        priority: 'Critical',
+        deliveryChannel: 'In-App',
+      })
+      .catch(() => {});
+
+    // Email notification
+    await emailService
+      .sendEmail({
+        to: user.email,
+        subject: 'ParkEase Notice: Parking Owner Account Suspended',
+        text: `Hello ${user.fullName},\n\nYour ParkEase Parking Owner account has been suspended.\nReason: ${reason.trim()}\n\nActive sessions have been terminated. Access to the Owner Dashboard is restricted. If you believe this is in error, please contact administrator support.\n\nParkEase Administration`,
+        emailType: 'SYSTEM_NOTIFICATION',
+        senderId: adminObjectId,
+      })
+      .catch(() => {});
+
+    // Audit log
+    await auditService.log({
+      userId: adminObjectId,
+      roleId: adminRoleId ? new mongoose.Types.ObjectId(adminRoleId) : null,
+      module: 'Owner Application Management',
+      actionCode: 'OWNER_SUSPENDED',
+      actionTitle: 'Parking Owner Account Suspended',
+      description: `Suspended parking owner ${user.fullName} (${user.email}). Reason: ${reason.trim()}`,
+      targetCollection: 'users',
+      targetDocumentId: user._id as mongoose.Types.ObjectId,
+      beforeData: { accountStatus: previousStatus },
+      afterData: { accountStatus: 'Suspended', suspensionReason: reason.trim() },
+      actionStatus: 'Success',
+      ipAddress: ipAddress || undefined,
+      deviceInfo: userAgent || undefined,
+    });
+
+    return user.toObject();
+  }
+
+  /**
+   * Reactivate a suspended Parking Owner account.
+   */
+  public async activateOwner(
+    ownerIdOrAppId: string,
+    remarks?: string | null,
+    adminUserId?: string,
+    adminRoleId?: string | null,
+    ipAddress?: string | null,
+    userAgent?: string | null,
+  ): Promise<User> {
+    let user: (User & mongoose.Document) | null = null;
+
+    if (mongoose.Types.ObjectId.isValid(ownerIdOrAppId)) {
+      user = await (UserModel as mongoose.Model<User>).findById(ownerIdOrAppId).exec();
+    }
+
+    if (!user) {
+      const isObjectId = mongoose.Types.ObjectId.isValid(ownerIdOrAppId);
+      const query = isObjectId
+        ? { $or: [{ _id: ownerIdOrAppId }, { applicationReference: ownerIdOrAppId }] }
+        : { applicationReference: ownerIdOrAppId };
+
+      const app = await (OwnerApplicationModel as mongoose.Model<OwnerApplication>)
+        .findOne(query)
+        .exec();
+      if (app && app.applicantId) {
+        user = await (UserModel as mongoose.Model<User>).findById(app.applicantId).exec();
+      }
+    }
+
+    if (!user) {
+      throw new AppError('Owner account not found.', 404, 'OWNER_NOT_FOUND');
+    }
+
+    if (user.accountStatus === 'Active') {
+      throw new AppError('Owner account is already active.', 400, 'ALREADY_ACTIVE');
+    }
+
+    const previousStatus = user.accountStatus;
+    const adminObjectId = adminUserId ? new mongoose.Types.ObjectId(adminUserId) : null;
+
+    user.accountStatus = 'Active';
+    user.suspensionReason = null;
+    user.suspendedAt = null;
+    user.suspendedBy = null;
+
+    await user.save();
+
+    // In-app notification
+    await notificationService
+      .createNotification({
+        userId: user._id,
+        senderId: adminObjectId,
+        notificationType: 'Parking Owner Registration',
+        eventType: 'Customer Account Reactivated',
+        title: 'Parking Owner Account Reactivated',
+        message:
+          'Your ParkEase Parking Owner account has been reactivated. You can now log in and access your Owner Dashboard.',
+        priority: 'Normal',
+        deliveryChannel: 'In-App',
+      })
+      .catch(() => {});
+
+    // Email notification
+    await emailService
+      .sendEmail({
+        to: user.email,
+        subject: 'ParkEase Notice: Parking Owner Account Reactivated',
+        text: `Hello ${user.fullName},\n\nYour ParkEase Parking Owner account has been reactivated. You now have full access to your Owner Dashboard.\n\nParkEase Administration`,
+        emailType: 'SYSTEM_NOTIFICATION',
+        senderId: adminObjectId,
+      })
+      .catch(() => {});
+
+    // Audit log
+    await auditService.log({
+      userId: adminObjectId,
+      roleId: adminRoleId ? new mongoose.Types.ObjectId(adminRoleId) : null,
+      module: 'Owner Application Management',
+      actionCode: 'OWNER_ACTIVATED',
+      actionTitle: 'Parking Owner Account Reactivated',
+      description: `Reactivated parking owner ${user.fullName} (${user.email}). ${remarks ? `Remarks: ${remarks}` : ''}`,
+      targetCollection: 'users',
+      targetDocumentId: user._id as mongoose.Types.ObjectId,
+      beforeData: { accountStatus: previousStatus },
+      afterData: { accountStatus: 'Active' },
+      actionStatus: 'Success',
+      ipAddress: ipAddress || undefined,
+      deviceInfo: userAgent || undefined,
+    });
+
+    return user.toObject();
+  }
+
+  /**
+   * Generate CSV format string of Owner Applications directory matching active filters.
+   */
+  public async exportOwnerApplicationsCsv(filter: GetOwnerApplicationsFilter): Promise<string> {
+    const appsResult = await this.getOwnerApplications({
+      ...filter,
+      page: 1,
+      limit: 1000,
+    });
+
+    const headers = [
+      'Application Reference',
+      'Business Name',
+      'Business Type',
+      'Owner Name',
+      'Email',
+      'Mobile',
+      'City',
+      'State',
+      'Capacity (Slots)',
+      'Registration Fee',
+      'Payment Status',
+      'Payment ID',
+      'Application Status',
+      'Account Status',
+      'Submitted Date',
+      'Approval Date',
+    ];
+
+    const escapeCsv = (val: unknown) => {
+      if (val === null || val === undefined) return '""';
+      const str = String(val).replace(/"/g, '""');
+      return `"${str}"`;
+    };
+
+    const rows = appsResult.applications.map((app) => {
+      const payment = app.paymentId as unknown as { paymentReference?: string; paymentStatus?: string } | null;
+      const applicant = app.applicantId as unknown as { accountStatus?: string } | null;
+
+      return [
+        escapeCsv(app.applicationReference),
+        escapeCsv(app.businessName),
+        escapeCsv(app.businessType),
+        escapeCsv(app.ownerName),
+        escapeCsv(app.businessEmail),
+        escapeCsv(app.businessPhone),
+        escapeCsv(app.city),
+        escapeCsv(app.state),
+        escapeCsv(app.parkingCapacity),
+        escapeCsv(app.registrationFeeAmount || 999),
+        escapeCsv(payment?.paymentStatus || 'Pending'),
+        escapeCsv(payment?.paymentReference || '—'),
+        escapeCsv(app.applicationStatus),
+        escapeCsv(applicant?.accountStatus || 'Pending Approval'),
+        escapeCsv(app.submittedAt ? new Date(app.submittedAt).toISOString().split('T')[0] : '—'),
+        escapeCsv(app.reviewedAt ? new Date(app.reviewedAt).toISOString().split('T')[0] : '—'),
+      ].join(',');
+    });
+
+    return [headers.join(','), ...rows].join('\n');
   }
 }
 

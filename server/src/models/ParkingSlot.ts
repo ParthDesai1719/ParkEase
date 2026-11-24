@@ -84,6 +84,12 @@ const parkingSlotSchema = new mongoose.Schema(
       trim: true,
     },
 
+    isOverflow: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
     remarks: {
       type: String,
       default: null,
@@ -119,6 +125,11 @@ parkingSlotSchema.index(
 );
 
 parkingSlotSchema.index({ slotStatus: 1 }, { name: 'IDX_Status' });
+
+parkingSlotSchema.index(
+  { parkingLotId: 1, isOverflow: 1, slotStatus: 1 },
+  { name: 'IDX_OverflowStatus' },
+);
 
 parkingSlotSchema.index({ currentBookingId: 1 }, { name: 'IDX_Booking' });
 

@@ -272,6 +272,7 @@ class AuthService {
       }
       (user as any).invitationStatus = 'Accepted';
     }
+    const isFirstLogin = !user.lastLogin;
     user.lastLogin = new Date();
     await user.save();
 
@@ -301,8 +302,9 @@ class AuthService {
     return {
       user: {
         ...userObj,
+        isFirstLogin,
         role: user.roleId,
-      } as unknown as User & { _id: mongoose.Types.ObjectId },
+      } as unknown as User & { _id: mongoose.Types.ObjectId; isFirstLogin?: boolean },
       accessToken,
       refreshToken: rawRefreshToken,
     };

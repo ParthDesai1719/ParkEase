@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import {
   RotateCw,
+  RefreshCw,
   Trash2,
   X,
   Sliders,
@@ -63,8 +64,13 @@ interface PropertyInspectorProps {
   // Prop Defaults & Settings Pane
   propDefaults: PropDimensionDefaults;
   onSavePropDefaults: (newDefaults: PropDimensionDefaults, applyToExisting?: boolean) => void;
-  activeInspectorTab?: 'properties' | 'settings';
-  onInspectorTabChange?: (tab: 'properties' | 'settings') => void;
+  activeInspectorTab?: 'properties' | 'settings' | 'overflow';
+  onInspectorTabChange?: (tab: 'properties' | 'settings' | 'overflow') => void;
+  overflowCapacity?: number;
+  overflowSlotCount?: number;
+  totalLotSlots?: number;
+  onUpdateOverflowCapacity?: (cap: number) => Promise<void>;
+  isUpdatingOverflow?: boolean;
   onOpenExpandedModal?: () => void;
   placedElementsCount?: number;
   isCollapsed?: boolean;
@@ -100,6 +106,11 @@ export const PropertyInspector: React.FC<PropertyInspectorProps> = ({
   onSavePropDefaults,
   activeInspectorTab = 'properties',
   onInspectorTabChange,
+  overflowCapacity = 0,
+  overflowSlotCount = 0,
+  totalLotSlots,
+  onUpdateOverflowCapacity,
+  isUpdatingOverflow = false,
   onOpenExpandedModal,
   placedElementsCount = 0,
   isCollapsed = false,
@@ -122,6 +133,11 @@ export const PropertyInspector: React.FC<PropertyInspectorProps> = ({
 }) => {
   const [settingsData, setSettingsData] = useState<PropDimensionDefaults>(() => mergePropDefaults(propDefaults));
   const [applyToExisting, setApplyToExisting] = useState<boolean>(false);
+  const [tempOverflowCapacity, setTempOverflowCapacity] = useState<number>(overflowCapacity || 0);
+
+  useEffect(() => {
+    setTempOverflowCapacity(overflowCapacity || 0);
+  }, [overflowCapacity]);
 
   const connectedProps = useMemo(() => {
     if (!selectedElement || !allElements.length) return [];
@@ -274,6 +290,28 @@ export const PropertyInspector: React.FC<PropertyInspectorProps> = ({
           <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
         </Button>
 
+        {/* Quick Toggle: Overflow Config */}
+        <Button
+          variant={activeInspectorTab === 'overflow' ? 'secondary' : 'ghost'}
+          size="icon"
+          className={cn(
+            'h-8 w-8 cursor-pointer relative transition-colors',
+            activeInspectorTab === 'overflow'
+              ? 'text-slate-200 bg-slate-800 border border-slate-600'
+              : 'text-muted-foreground hover:text-slate-300',
+          )}
+          onClick={() => {
+            onInspectorTabChange?.('overflow');
+            onToggleCollapse();
+          }}
+          title={`Overflow / Extra Slots Configuration (${overflowSlotCount || 0} designated)`}
+        >
+          <Sparkles className="h-4 w-4 text-slate-300" />
+          {overflowSlotCount && overflowSlotCount > 0 ? (
+            <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-slate-400" />
+          ) : null}
+        </Button>
+
         <div className="w-6 border-b border-border/60" />
 
         {/* Rotated Sidebar Label */}
@@ -289,13 +327,13 @@ export const PropertyInspector: React.FC<PropertyInspectorProps> = ({
 
   return (
     <aside className="w-72 sm:w-80 h-full max-h-full border-l border-border/80 bg-card/95 backdrop-blur-md flex flex-col shrink-0 text-foreground overflow-y-auto z-20 select-none">
-      {/* 1. TOP TAB SWITCHER: Properties/Overview vs Prop Settings */}
+      {/* 1. TOP TAB SWITCHER: Properties/Overview vs Prop Settings vs Overflow */}
       <div className="flex items-center border-b border-border/70 bg-muted/40 p-1.5 shrink-0 gap-1">
         <button
           type="button"
           onClick={() => onInspectorTabChange?.('properties')}
           className={cn(
-            'flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-semibold rounded-md transition-all cursor-pointer',
+            'flex-1 flex items-center justify-center gap-1 py-1.5 px-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer',
             activeInspectorTab === 'properties'
               ? 'bg-background text-foreground shadow-xs border border-border/60'
               : 'text-muted-foreground hover:text-foreground',
@@ -318,15 +356,35 @@ export const PropertyInspector: React.FC<PropertyInspectorProps> = ({
           type="button"
           onClick={() => onInspectorTabChange?.('settings')}
           className={cn(
-            'flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 text-xs font-semibold rounded-md transition-all cursor-pointer',
+            'flex-1 flex items-center justify-center gap-1 py-1.5 px-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer',
             activeInspectorTab === 'settings'
               ? 'bg-background text-cyan-400 shadow-xs border border-cyan-500/50'
               : 'text-muted-foreground hover:text-foreground',
           )}
         >
           <SlidersHorizontal className="h-3.5 w-3.5 text-cyan-400" />
-          <span>Prop Settings</span>
+          <span>Props</span>
           <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onInspectorTabChange?.('overflow')}
+          className={cn(
+            'flex-1 flex items-center justify-center gap-1 py-1.5 px-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer',
+            activeInspectorTab === 'overflow'
+              ? 'bg-background text-slate-200 shadow-xs border border-slate-600/80 font-bold'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          title="Overflow Bays & Capacity Threshold Configuration"
+        >
+          <Sparkles className="h-3.5 w-3.5 text-slate-300" />
+          <span>Overflow</span>
+          {overflowSlotCount !== undefined && overflowSlotCount > 0 ? (
+            <span className="px-1 py-0.2 rounded-full text-[9px] font-mono bg-slate-800 text-slate-300 border border-slate-600">
+              {overflowSlotCount}
+            </span>
+          ) : null}
         </button>
 
         {selectedElement && activeInspectorTab === 'properties' && (
@@ -355,7 +413,174 @@ export const PropertyInspector: React.FC<PropertyInspectorProps> = ({
       </div>
 
       {/* 2. PANE CONTENT */}
-      {activeInspectorTab === 'settings' ? (
+      {activeInspectorTab === 'overflow' ? (
+        /* ================= OVERFLOW CONFIGURATION PANE ================= */
+        <div className="p-4 space-y-4 flex flex-col flex-1">
+          {/* Header Banner */}
+          <div className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-3 space-y-1">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-slate-300" />
+              <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                Overflow Bays & Capacity
+              </h4>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Configure dynamic fallback bays for overstay conflicts & walk-ins. Overflow bays are frozen for online customer booking.
+            </p>
+          </div>
+
+          {/* Key Metrics Summary */}
+          <div className="p-3 rounded-lg bg-slate-900/50 border border-slate-700/60 space-y-2 text-xs">
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span>Total Official Bays:</span>
+              <span className="font-mono font-bold text-foreground">
+                {totalLotSlots ?? floorStats.totalSlots} Bays
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span>Regular Standard Bays:</span>
+              <span className="font-mono font-bold text-foreground">
+                {Math.max(
+                  0,
+                  (totalLotSlots ?? floorStats.totalSlots) - (overflowSlotCount ?? 0),
+                )}{' '}
+                Bays
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span>Designated Overflow Bays:</span>
+              <span className="font-mono font-bold text-slate-300 flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-xs bg-slate-500/40 border border-slate-400 inline-block" />
+                {overflowSlotCount ?? 0} Bays
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-muted-foreground border-t border-slate-700/40 pt-1.5">
+              <span>Active Capacity Threshold:</span>
+              <span className="font-mono font-bold text-emerald-400">
+                {overflowCapacity ?? 0}
+              </span>
+            </div>
+          </div>
+
+          {/* Active Capacity Threshold Input & Save */}
+          <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-2.5">
+            <Label className="text-xs font-semibold text-foreground flex items-center justify-between">
+              <span>Capacity Threshold</span>
+              <Badge variant="outline" className="text-[10px] font-mono border-slate-600 text-slate-300">
+                Max Allowed: {overflowSlotCount ?? 0}
+              </Badge>
+            </Label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                max={totalLotSlots ?? floorStats.totalSlots}
+                value={tempOverflowCapacity}
+                onChange={(e) => setTempOverflowCapacity(Math.max(0, parseInt(e.target.value) || 0))}
+                className="w-full h-8 px-2.5 text-xs font-mono bg-muted/30 border border-border/60 rounded-md focus:outline-hidden focus:ring-1 focus:ring-slate-500"
+                placeholder="e.g. 5"
+              />
+              <Button
+                size="sm"
+                variant="default"
+                disabled={isUpdatingOverflow || !onUpdateOverflowCapacity}
+                onClick={async () => {
+                  if (onUpdateOverflowCapacity) {
+                    await onUpdateOverflowCapacity(tempOverflowCapacity);
+                  }
+                }}
+                className="h-8 px-3 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-100 font-semibold gap-1.5 shrink-0 cursor-pointer"
+              >
+                {isUpdatingOverflow ? (
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Save className="h-3 w-3" />
+                )}
+                Save
+              </Button>
+            </div>
+            <p className="text-[10px] text-muted-foreground leading-relaxed">
+              Controls how many overflow bays may be simultaneously allocated for overstay reassignments and security staff walk-ins. Set to 0 to disable overflow fallbacks.
+            </p>
+          </div>
+
+          {/* Designated Overflow Bays on this Floor */}
+          <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-foreground">
+                Overflow Bays on {floorStats.floorName}
+              </span>
+              <Badge variant="secondary" className="font-mono text-[10px]">
+                {allElements.filter((el) => el.elementType === 'ParkingSlot' && el.isOverflow).length} Bays
+              </Badge>
+            </div>
+
+            {allElements.filter((el) => el.elementType === 'ParkingSlot' && el.isOverflow).length === 0 ? (
+              <p className="text-[11px] text-muted-foreground italic py-1">
+                No bays on this floor are designated as overflow yet. Click any slot and check "Overflow / Extra Bay" in its properties.
+              </p>
+            ) : (
+              <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                {allElements
+                  .filter((el) => el.elementType === 'ParkingSlot' && el.isOverflow)
+                  .map((el) => (
+                    <button
+                      key={el.elementId}
+                      type="button"
+                      onClick={() => onSelectConnectedElement?.(el)}
+                      className={cn(
+                        'w-full flex items-center justify-between p-2 rounded-md border text-left text-xs transition-colors cursor-pointer',
+                        selectedElement?.elementId === el.elementId
+                          ? 'bg-slate-800 border-slate-500 text-white'
+                          : 'bg-muted/30 border-border/50 hover:bg-muted/60 text-slate-200',
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-xs bg-slate-500/50 border border-slate-400" />
+                        <span className="font-mono font-bold">Bay {el.slotNumber || el.label || 'N/A'}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Badge className="bg-slate-800/80 text-slate-300 border-slate-600 text-[9px] py-0">
+                          {el.supportedVehicleType || 'Universal'}
+                        </Badge>
+                        <Badge variant="outline" className="font-mono text-[9px] py-0 text-muted-foreground">
+                          Zone {el.zoneCode || 'A'}
+                        </Badge>
+                      </div>
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
+
+          {/* Operational Policy & Protocols */}
+          <div className="p-3 rounded-lg bg-slate-950/40 border border-slate-800 text-[11px] text-slate-400 space-y-2 leading-relaxed">
+            <p className="font-bold text-slate-200 flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5 text-slate-300" />
+              Overflow Rules & System Policies
+            </p>
+            <ul className="list-disc pl-4 space-y-1.5">
+              <li>
+                <strong className="text-slate-300">Frozen for Online Customers:</strong> Overflow slots cannot be booked online. On the customer booking map, they appear frozen with transparent gray styling.
+              </li>
+              <li>
+                <strong className="text-slate-300">Overstay Reassignment Rule:</strong> If Customer 1's bay is occupied by Customer 2 (overstay) upon arrival:
+                <div className="mt-1 pl-2 border-l border-slate-700/80 space-y-0.5 text-[10px]">
+                  <div>1. System checks for a free regular compatible slot.</div>
+                  <div>2. If none, reassigns an available universal overflow slot.</div>
+                  <div>3. If none available, initiates an immediate 100% full refund with zero penalty.</div>
+                </div>
+              </li>
+              <li>
+                <strong className="text-slate-300">Security Walk-In Only:</strong> Security staff can book overflow slots when all regular bays are full.
+              </li>
+              <li>
+                <strong className="text-slate-300">Visual Styling:</strong> Rendered in transparent gray (<code className="text-slate-300">rgba(100, 116, 139, 0.22)</code>) across all 2D viewers.
+              </li>
+            </ul>
+          </div>
+        </div>
+      ) : activeInspectorTab === 'settings' ? (
         /* ================= PROP SETTINGS PANE ================= */
         <div className="p-4 space-y-4 flex flex-col flex-1">
           {/* Header Banner */}
@@ -905,6 +1130,31 @@ export const PropertyInspector: React.FC<PropertyInspectorProps> = ({
             )}
           </div>
 
+          {/* Quick Overflow Summary & Navigation Card */}
+          <div className="rounded-lg border border-slate-700/60 bg-slate-900/40 p-3 space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5 text-slate-400" />
+                Overflow & Fallback
+              </span>
+              <Badge className="bg-slate-800 text-slate-300 border-slate-600 font-mono text-[10px]">
+                {overflowSlotCount ?? 0} Designated
+              </Badge>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Capacity: <strong className="text-slate-200">{overflowCapacity ?? 0}</strong> • Frozen for online customers.
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => onInspectorTabChange?.('overflow')}
+              className="w-full h-7 text-xs border-slate-700 hover:bg-slate-800 text-slate-300 cursor-pointer gap-1.5"
+            >
+              <Sparkles className="h-3 w-3 text-slate-400" />
+              Configure Overflow Bays & Rules
+            </Button>
+          </div>
+
           {/* Facility Boundary & Canvas Dimensions (Synced across all floors, master controlled from Ground Floor) */}
           {canvasConfig && (
             <div className="rounded-lg border border-cyan-500/30 bg-cyan-950/20 p-3 space-y-2 text-xs">
@@ -1141,6 +1391,27 @@ export const PropertyInspector: React.FC<PropertyInspectorProps> = ({
                 <Badge variant="secondary" className="font-mono text-xs">
                   Zone {selectedElement.zoneCode || 'A'}
                 </Badge>
+              </div>
+              <div className="pt-2 border-t border-border/40 flex items-center justify-between">
+                <div>
+                  <span className="font-semibold text-foreground flex items-center gap-1.5">
+                    Designate as Overflow Bay
+                    {selectedElement.isOverflow && (
+                      <Badge className="bg-slate-800 text-slate-200 border border-slate-600 text-[9px] px-1 py-0 font-mono">
+                        Transparent Gray
+                      </Badge>
+                    )}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground block">
+                    Frozen for customers • Universal overstay &amp; walk-in fallback
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={Boolean(selectedElement.isOverflow)}
+                  onChange={(e) => onUpdateElement({ isOverflow: e.target.checked })}
+                  className="h-4 w-4 rounded border-slate-600 text-slate-500 focus:ring-slate-500 cursor-pointer"
+                />
               </div>
             </div>
           )}

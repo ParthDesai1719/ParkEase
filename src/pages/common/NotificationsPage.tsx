@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Bell,
@@ -16,7 +16,7 @@ import {
   Filter,
   ArrowLeft,
 } from 'lucide-react';
-import { format, formatDistanceToNow } from 'date-fns';
+import { format, formatDistanceToNow, isToday, isYesterday, parseISO } from 'date-fns';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardTitle, CardDescription } from '@/components/ui/card';
@@ -40,6 +40,7 @@ import {
   type AppNotification,
 } from '@/api/notification.api';
 import { playNotificationSound } from '@/lib/notificationSound';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import { getSocket } from '@/lib/socket';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -54,7 +55,7 @@ export const NotificationsPage: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [, setIsRefreshing] = useState(false);
 
   // Filters
   const [activeTab, setActiveTab] = useState<'all' | 'unread' | 'read'>('all');
@@ -98,6 +99,13 @@ export const NotificationsPage: React.FC = () => {
   useEffect(() => {
     void loadNotifications();
   }, [loadNotifications]);
+
+  // Live real-time notification sync without ghost reload
+  useLiveSync(() => {
+    void loadNotifications(false);
+  }, {
+    events: ['new_notification', 'admin_notification'],
+  });
 
   // Real-time socket listener
   useEffect(() => {
@@ -257,6 +265,177 @@ export const NotificationsPage: React.FC = () => {
     }
   };
 
+  // Resolve deep-link URL for notifications (including booking metadata)
+  const resolveTargetUrl = (item: AppNotification): string | null => {
+    if (item.actionUrl) return item.actionUrl;
+    const bId =
+      item.bookingId ||
+      (item.metadata?.bookingId as string | undefined) ||
+      (item.metadata?.booking_id as string | undefined);
+    if (bId) {
+      if (roleCode === 'CUSTOMER') {
+        return `/customer/booking/${bId}`;
+      }
+      if (roleCode === 'OWNER' || roleCode === 'PARKING_OWNER') {
+        return `/owner/bookings/${bId}`;
+      }
+      if (roleCode === 'SECURITY') {
+        return `/security/dashboard`;
+      }
+      if (roleCode === 'ADMIN') {
+        return `/admin/operations`;
+      }
+    }
+    return null;
+  };
+
+  // Chronological Grouping into Today, Yesterday, and Earlier
+  const { todayGroup, yesterdayGroup, earlierGroup } = useMemo(() => {
+    const today: AppNotification[] = [];
+    const yesterday: AppNotification[] = [];
+    const earlier: AppNotification[] = [];
+
+    for (const item of notifications) {
+      const d = parseISO(item.createdAt);
+      if (isToday(d)) {
+        today.push(item);
+      } else if (isYesterday(d)) {
+        yesterday.push(item);
+      } else {
+        earlier.push(item);
+      }
+    }
+
+    return {
+      todayGroup: today,
+      yesterdayGroup: yesterday,
+      earlierGroup: earlier,
+    };
+  }, [notifications]);
+
+  const renderNotificationCard = (item: AppNotification) => {
+    const timeAgo = formatDistanceToNow(new Date(item.createdAt), { addSuffix: true });
+    const exactDate = format(new Date(item.createdAt), 'PPP p');
+    const targetUrl = resolveTargetUrl(item);
+
+    return (
+      <Card
+        key={item._id}
+        onClick={() => {
+          if (targetUrl) {
+            if (!item.isRead) void handleMarkAsRead(item._id);
+            navigate(targetUrl);
+          }
+        }}
+        className={`transition-all border ${
+          targetUrl ? 'cursor-pointer hover:border-primary/60 hover:shadow-xs' : ''
+        } ${
+          !item.isRead
+            ? 'border-primary/40 bg-primary/5 shadow-xs'
+            : 'border-border/60 bg-card hover:border-border'
+        }`}
+      >
+        <CardContent className="p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-3 sm:gap-4">
+            {/* Left Icon */}
+            <div className="mt-0.5 shrink-0 rounded-lg p-2.5 bg-background border border-border/60 shadow-2xs">
+              {getNotificationIcon(item.notificationType, item.priority)}
+            </div>
+
+            {/* Middle Content */}
+            <div className="flex-1 min-w-0 space-y-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold text-sm text-foreground">
+                  {item.title}
+                </span>
+                {!item.isRead && (
+                  <span className="h-2 w-2 rounded-full bg-primary shrink-0" title="Unread notification" />
+                )}
+                {getCategoryBadge(item.notificationType)}
+                {getPriorityBadge(item.priority)}
+              </div>
+
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {item.message}
+              </p>
+
+              <div className="flex items-center gap-3 pt-1 text-[11px] text-muted-foreground/80 flex-wrap">
+                <span title={exactDate}>{timeAgo}</span>
+                <span>&bull;</span>
+                <span className="font-mono text-[10px]">{item.notificationReference}</span>
+                {targetUrl && (
+                  <>
+                    <span>&bull;</span>
+                    <span className="text-primary font-medium flex items-center gap-0.5">
+                      View Details &rarr;
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Right Controls */}
+            <div
+              className="flex items-center gap-1.5 shrink-0 pt-0.5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Audio chime test on each card */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-primary hover:bg-primary/10 cursor-pointer"
+                onClick={() => {
+                  playNotificationSound();
+                  toast('🔔 Playing notification bell chime');
+                }}
+                title="Test notification sound chime"
+              >
+                <Volume2 className="h-4 w-4" />
+              </Button>
+
+              {targetUrl && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="h-8 text-xs font-medium gap-1 px-3"
+                  onClick={() => {
+                    if (!item.isRead) void handleMarkAsRead(item._id);
+                    navigate(targetUrl);
+                  }}
+                >
+                  View
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+              )}
+
+              {!item.isRead && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                  onClick={() => void handleMarkAsRead(item._id)}
+                  title="Mark as read"
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                </Button>
+              )}
+
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                onClick={() => void handleDelete(item._id)}
+                title="Delete notification"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  };
+
   return (
     <div className="mx-auto max-w-5xl w-full px-4 sm:px-6 lg:px-8 py-8 space-y-6 animate-in fade-in-50 duration-300">
       {/* Breadcrumb Navigation */}
@@ -300,31 +479,6 @@ export const NotificationsPage: React.FC = () => {
 
         {/* Action Controls */}
         <div className="flex items-center gap-2 flex-wrap">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              playNotificationSound();
-              toast('Notification chime sound tested 🔔');
-            }}
-            className="text-xs gap-1.5 cursor-pointer"
-            title="Test notification bell chime"
-          >
-            <Volume2 className="h-3.5 w-3.5 text-primary" />
-            Test Bell Sound
-          </Button>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void loadNotifications(true)}
-            disabled={isRefreshing || isLoading}
-            className="text-xs gap-1.5 cursor-pointer"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-
           {unreadCount > 0 && (
             <Button
               variant="outline"
@@ -417,109 +571,60 @@ export const NotificationsPage: React.FC = () => {
           </div>
         </Card>
       ) : (
-        <div className="space-y-3">
-          {notifications.map((item) => {
-            const timeAgo = formatDistanceToNow(new Date(item.createdAt), { addSuffix: true });
-            const exactDate = format(new Date(item.createdAt), 'PPP p');
+        <div className="space-y-6">
+          {/* TODAY SECTION */}
+          {todayGroup.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  Today
+                </span>
+                <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-primary/10 text-primary font-semibold">
+                  {todayGroup.length}
+                </span>
+                <div className="flex-1 h-px bg-border/60" />
+              </div>
+              <div className="space-y-3">
+                {todayGroup.map((item) => renderNotificationCard(item))}
+              </div>
+            </div>
+          )}
 
-            return (
-              <Card
-                key={item._id}
-                className={`transition-all border ${
-                  !item.isRead
-                    ? 'border-primary/40 bg-primary/5 shadow-xs'
-                    : 'border-border/60 bg-card hover:border-border'
-                }`}
-              >
-                <CardContent className="p-4 sm:p-5">
-                  <div className="flex items-start justify-between gap-3 sm:gap-4">
-                    {/* Left Icon */}
-                    <div className="mt-0.5 shrink-0 rounded-lg p-2.5 bg-background border border-border/60 shadow-2xs">
-                      {getNotificationIcon(item.notificationType, item.priority)}
-                    </div>
+          {/* YESTERDAY SECTION */}
+          {yesterdayGroup.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  Yesterday
+                </span>
+                <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-muted text-muted-foreground font-semibold">
+                  {yesterdayGroup.length}
+                </span>
+                <div className="flex-1 h-px bg-border/60" />
+              </div>
+              <div className="space-y-3">
+                {yesterdayGroup.map((item) => renderNotificationCard(item))}
+              </div>
+            </div>
+          )}
 
-                    {/* Middle Content */}
-                    <div className="flex-1 min-w-0 space-y-1.5">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-sm text-foreground">
-                          {item.title}
-                        </span>
-                        {!item.isRead && (
-                          <span className="h-2 w-2 rounded-full bg-primary shrink-0" title="Unread notification" />
-                        )}
-                        {getCategoryBadge(item.notificationType)}
-                        {getPriorityBadge(item.priority)}
-                      </div>
-
-                      <p className="text-xs text-muted-foreground leading-relaxed">
-                        {item.message}
-                      </p>
-
-                      <div className="flex items-center gap-3 pt-1 text-[11px] text-muted-foreground/80 flex-wrap">
-                        <span title={exactDate}>{timeAgo}</span>
-                        <span>&bull;</span>
-                        <span className="font-mono text-[10px]">{item.notificationReference}</span>
-                      </div>
-                    </div>
-
-                    {/* Right Controls */}
-                    <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
-                      {/* Audio chime test on each card */}
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-muted-foreground hover:text-primary hover:bg-primary/10 cursor-pointer"
-                        onClick={() => {
-                          playNotificationSound();
-                          toast('🔔 Playing notification bell chime');
-                        }}
-                        title="Test notification sound chime"
-                      >
-                        <Volume2 className="h-4 w-4" />
-                      </Button>
-
-                      {item.actionUrl && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="h-8 text-xs font-medium gap-1 px-3"
-                          onClick={() => {
-                            if (!item.isRead) void handleMarkAsRead(item._id);
-                            navigate(item.actionUrl!);
-                          }}
-                        >
-                          View
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-
-                      {!item.isRead && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                          onClick={() => void handleMarkAsRead(item._id)}
-                          title="Mark as read"
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                        </Button>
-                      )}
-
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                        onClick={() => void handleDelete(item._id)}
-                        title="Delete notification"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
+          {/* EARLIER SECTION */}
+          {earlierGroup.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  Earlier
+                </span>
+                <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-muted text-muted-foreground font-semibold">
+                  {earlierGroup.length}
+                </span>
+                <div className="flex-1 h-px bg-border/60" />
+              </div>
+              <div className="space-y-3">
+                {earlierGroup.map((item) => renderNotificationCard(item))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

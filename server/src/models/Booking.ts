@@ -30,6 +30,139 @@ const cancellationByValues = [
   'System',
 ] as const;
 
+const extensionPaymentMethodValues = ['RAZORPAY', 'CASH'] as const;
+const extensionPaymentStatusValues = [
+  'PENDING',
+  'SUCCESSFUL',
+  'FAILED',
+  'CASH_REVERSAL_PENDING',
+] as const;
+const extensionStatusValues = ['PENDING_PAYMENT', 'CONFIRMED', 'FAILED', 'CANCELLED'] as const;
+
+const extensionItemSchema = new mongoose.Schema(
+  {
+    extensionReference: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    extensionDurationMinutes: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+    previousScheduledExitTime: {
+      type: Date,
+      required: true,
+    },
+    newScheduledExitTime: {
+      type: Date,
+      required: true,
+    },
+    extensionAmount: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    paymentMethod: {
+      type: String,
+      required: true,
+      enum: extensionPaymentMethodValues,
+    },
+    paymentStatus: {
+      type: String,
+      required: true,
+      enum: extensionPaymentStatusValues,
+      default: 'PENDING',
+    },
+    paymentReference: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    paymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Payment',
+      default: null,
+    },
+    status: {
+      type: String,
+      required: true,
+      enum: extensionStatusValues,
+      default: 'CONFIRMED',
+    },
+    requestedAt: {
+      type: Date,
+      default: Date.now,
+    },
+    confirmedAt: {
+      type: Date,
+      default: null,
+    },
+    cashCollectedAt: {
+      type: Date,
+      default: null,
+    },
+    cashCollectedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    notes: {
+      type: String,
+      default: null,
+      maxlength: 500,
+    },
+  },
+  {
+    _id: true,
+    timestamps: true,
+  },
+);
+
+const activeExtensionHoldSchema = new mongoose.Schema(
+  {
+    holdReference: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    additionalMinutes: {
+      type: Number,
+      default: null,
+    },
+    proposedExitTime: {
+      type: Date,
+      default: null,
+    },
+    additionalCharge: {
+      type: Number,
+      default: null,
+    },
+    paymentMethod: {
+      type: String,
+      enum: extensionPaymentMethodValues,
+      default: null,
+    },
+    paymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Payment',
+      default: null,
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
+    createdAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  {
+    _id: false,
+  },
+);
+
 const bookingSchema = new mongoose.Schema(
   {
     bookingReference: {
@@ -115,6 +248,11 @@ const bookingSchema = new mongoose.Schema(
       default: null,
     },
 
+    completionEmailSent: {
+      type: Boolean,
+      default: false,
+    },
+
     gracePeriodMinutes: {
       type: Number,
       required: true,
@@ -146,6 +284,13 @@ const bookingSchema = new mongoose.Schema(
     },
 
     baseAmount: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+    },
+
+    platformBookingFee: {
       type: Number,
       required: true,
       default: 0,
@@ -236,6 +381,21 @@ const bookingSchema = new mongoose.Schema(
       required: true,
       default: 0,
       min: 0,
+    },
+
+    originalScheduledExitTime: {
+      type: Date,
+      default: null,
+    },
+
+    activeExtensionHold: {
+      type: activeExtensionHoldSchema,
+      default: null,
+    },
+
+    extensions: {
+      type: [extensionItemSchema],
+      default: [],
     },
   },
   {

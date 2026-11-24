@@ -2094,11 +2094,18 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
       }
       return;
     }
-    if (e.button === 1 || activeTool === 'pan' || e.shiftKey) {
+    const targetEl = e.target as HTMLElement;
+    const isBg =
+      e.target === svgRef.current ||
+      targetEl.id === 'canvas-bg-rect' ||
+      targetEl.id === 'canvas-container' ||
+      targetEl.tagName === 'svg';
+
+    if (e.button === 1 || activeTool === 'pan' || e.shiftKey || (!isEdit && isBg && e.button === 0)) {
       setIsPanning(true);
       setPanStart({ x: e.clientX - panX, y: e.clientY - panY });
       containerRef.current?.setPointerCapture?.(e.pointerId);
-    } else if (e.target === svgRef.current || (e.target as HTMLElement).id === 'canvas-bg-rect') {
+    } else if (isBg) {
       onSelectElement(null);
     }
   };
@@ -2825,7 +2832,9 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         onDrop={handleDrop}
         style={{
           cursor:
-            isPanning || activeTool === 'pan'
+            isPanning
+              ? 'grabbing'
+              : activeTool === 'pan' || !isEdit
               ? 'grab'
               : activeTool === 'measure'
               ? 'crosshair'
@@ -4480,15 +4489,6 @@ export const CanvasViewport: React.FC<CanvasViewportProps> = ({
         <div className="hidden sm:flex items-center border-l border-slate-700/60 pl-2 pr-1 text-[10px] font-mono text-slate-400">
           {canvasConfig.width} × {canvasConfig.height}px
         </div>
-      </div>
-
-      {/* Floating Bottom-Left Canvas Quick Navigation Hint */}
-      <div className="absolute bottom-3 left-3 z-20 pointer-events-none hidden md:flex items-center gap-2 px-2.5 py-1 rounded-md bg-slate-900/75 backdrop-blur border border-slate-800/80 text-[10px] text-slate-400 font-medium">
-        <span>🖱️ Drag props to position</span>
-        <span>•</span>
-        <span>📐 Stretch frame from corner/edge</span>
-        <span>•</span>
-        <span>Wheel/Pinch to zoom canvas</span>
       </div>
     </div>
   );

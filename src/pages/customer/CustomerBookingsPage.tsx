@@ -24,6 +24,7 @@ import {
   ChevronRight,
   X,
   Loader2,
+  Star,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -48,6 +49,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useAuthStore } from '@/stores/authStore';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import {
   getCustomerBookings,
   cancelCustomerBooking,
@@ -56,6 +58,8 @@ import {
 } from '@/api/customerParking.api';
 import { BookingQrPassDialog } from '@/components/customer/booking/BookingQrPassDialog';
 import { BookingConfirmationDialog } from '@/components/customer/booking/BookingConfirmationDialog';
+import { CustomerReviewModal } from '@/components/customer/CustomerReviewModal';
+import { CustomerExtendBookingModal } from '@/components/customer/CustomerExtendBookingModal';
 import { buildReceiptConfirmationFromBooking } from '@/lib/bookingReceiptHelper';
 import { getSocket } from '@/lib/socket';
 import { cn } from '@/lib/utils';
@@ -141,6 +145,8 @@ export const CustomerBookingsPage: React.FC = () => {
   const [selectedCancelBooking, setSelectedCancelBooking] =
     useState<CustomerBookingItem | null>(null);
   const [cancelReason, setCancelReason] = useState('');
+  const [reviewModalBooking, setReviewModalBooking] = useState<CustomerBookingItem | null>(null);
+  const [selectedExtendBooking, setSelectedExtendBooking] = useState<CustomerBookingItem | null>(null);
 
   const cancelMutation = useMutation({
     mutationFn: () =>
@@ -204,6 +210,11 @@ export const CustomerBookingsPage: React.FC = () => {
       }),
     enabled: Boolean(user?._id),
     staleTime: 10_000,
+  });
+
+  // Silent live sync across socket events and visibility timer
+  useLiveSync(() => {
+    void refetch();
   });
 
   // Real-time Socket.IO updates (reconciled with authoritative backend data)
@@ -394,17 +405,6 @@ export const CustomerBookingsPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2.5 shrink-0">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void refetch()}
-            disabled={isFetching}
-            className="gap-1.5 text-xs"
-          >
-            <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
-            Refresh
-          </Button>
-
           <Button size="sm" asChild className="gap-1.5 text-xs font-semibold">
             <Link to="/customer/search">
               <Search className="h-3.5 w-3.5" />
@@ -879,18 +879,45 @@ export const CustomerBookingsPage: React.FC = () => {
                             Cancel
                           </Button>
                         )}
+
+                      {booking.bookingStatus === 'Active' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 text-xs gap-1.5 font-semibold text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10 cursor-pointer"
+                          onClick={() => setSelectedExtendBooking(booking)}
+                          data-testid={`extend-btn-${booking.bookingReference}`}
+                        >
+                          <Clock className="h-3.5 w-3.5" />
+                          Extend
+                        </Button>
+                      )}
                     </div>
 
-                    <Button
-                      size="sm"
-                      variant={booking.canViewQr ? 'outline' : 'default'}
-                      className="h-8 text-xs gap-1.5 font-semibold ml-auto"
-                      onClick={() => navigate(`/customer/booking/${booking.bookingId}`)}
-                      data-testid={`view-details-btn-${booking.bookingReference}`}
-                    >
-                      View Details
-                      <ArrowRight className="h-3.5 w-3.5" />
-                    </Button>
+                    <div className="flex items-center gap-2 ml-auto">
+                      {booking.bookingStatus === 'Completed' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 text-xs gap-1.5 font-semibold text-amber-600 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/10"
+                          onClick={() => setReviewModalBooking(booking)}
+                        >
+                          <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
+                          <span>Review</span>
+                        </Button>
+                      )}
+
+                      <Button
+                        size="sm"
+                        variant={booking.canViewQr ? 'outline' : 'default'}
+                        className="h-8 text-xs gap-1.5 font-semibold"
+                        onClick={() => navigate(`/customer/booking/${booking.bookingId}`)}
+                        data-testid={`view-details-btn-${booking.bookingReference}`}
+                      >
+                        View Details
+                        <ArrowRight className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
                 </Card>
               );
@@ -1043,6 +1070,49 @@ export const CustomerBookingsPage: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Review Modal for Completed Booking */}
+      {reviewModalBooking && (
+        <CustomerReviewModal
+          open={Boolean(reviewModalBooking)}
+          onOpenChange={(open) => {
+            if (!open) setReviewModalBooking(null);
+          }}
+          booking={{
+            bookingId: reviewModalBooking.bookingId,
+            bookingReference: reviewModalBooking.bookingReference,
+            parkingName: reviewModalBooking.parkingName,
+            parkingAddress: reviewModalBooking.parkingAddress,
+          }}
+          onSuccess={() => {
+            setReviewModalBooking(null);
+            void queryClient.invalidateQueries({ queryKey: ['customer-bookings'] });
+            void queryClient.invalidateQueries({ queryKey: ['customer-dashboard'] });
+          }}
+        />
+      )}
+
+      {/* Customer Extend Booking Modal */}
+      {selectedExtendBooking && (
+        <CustomerExtendBookingModal
+          isOpen={Boolean(selectedExtendBooking)}
+          onClose={() => setSelectedExtendBooking(null)}
+          booking={{
+            id: selectedExtendBooking.bookingId,
+            bookingReference: selectedExtendBooking.bookingReference,
+            scheduledExitTime: selectedExtendBooking.scheduledExitTime,
+            parkingLotName: selectedExtendBooking.parkingName,
+            parkingRateAtBooking: selectedExtendBooking.parkingRateAtBooking,
+            vehicleNumber: selectedExtendBooking.vehicle.vehicleNumber,
+            slotNumber: selectedExtendBooking.currentSlot.slotNumber,
+          }}
+          onSuccess={() => {
+            setSelectedExtendBooking(null);
+            void queryClient.invalidateQueries({ queryKey: ['customer-bookings'] });
+            void queryClient.invalidateQueries({ queryKey: ['customer-dashboard'] });
+          }}
+        />
+      )}
     </div>
   );
 };

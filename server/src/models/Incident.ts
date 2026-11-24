@@ -30,6 +30,48 @@ const severityValues = ['Low', 'Medium', 'High', 'Critical'] as const;
 
 const incidentStatusValues = ['Open', 'Under Investigation', 'Resolved', 'Closed'] as const;
 
+export const incidentResponseSchema = new mongoose.Schema(
+  {
+    responseId: {
+      type: String,
+      required: true,
+      default: () => new mongoose.Types.ObjectId().toString(),
+    },
+    authorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true,
+      ref: 'User',
+    },
+    authorRole: {
+      type: String,
+      required: true,
+      enum: ['PARKING_OWNER', 'OWNER', 'SECURITY_STAFF', 'SECURITY', 'ADMIN', 'SYSTEM'],
+    },
+    authorName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    message: {
+      type: String,
+      required: true,
+      maxlength: 2000,
+      trim: true,
+    },
+    attachments: {
+      type: [String],
+      default: [],
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: true, timestamps: false },
+);
+
+export type IncidentResponse = InferSchemaType<typeof incidentResponseSchema>;
+
 const incidentSchema = new mongoose.Schema(
   {
     incidentReference: {
@@ -146,6 +188,11 @@ const incidentSchema = new mongoose.Schema(
     closedAt: {
       type: Date,
       default: null,
+    },
+
+    responses: {
+      type: [incidentResponseSchema],
+      default: [],
     },
   },
   {

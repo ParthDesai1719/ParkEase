@@ -23,6 +23,7 @@ import {
   Info,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -169,10 +170,10 @@ export const SecurityManualLookupPage: React.FC = () => {
   };
 
   // 2. Fetch Bookings Search Results
-  const fetchBookings = useCallback(async () => {
+  const fetchBookings = useCallback(async (isSilent = false) => {
     if (!selectedLotId) return;
     try {
-      setLoadingResults(true);
+      if (!isSilent) setLoadingResults(true);
       const res = await securityApi.searchManualBookings({
         parkingLotId: selectedLotId,
         query: activeQuery || undefined,
@@ -182,15 +183,20 @@ export const SecurityManualLookupPage: React.FC = () => {
       });
       setSearchData(res);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to search bookings for manual verification.');
+      if (!isSilent) toast.error(err.message || 'Failed to search bookings for manual verification.');
     } finally {
-      setLoadingResults(false);
+      if (!isSilent) setLoadingResults(false);
     }
   }, [selectedLotId, activeQuery, selectedStatus, currentPage]);
 
   useEffect(() => {
-    fetchBookings();
+    void fetchBookings();
   }, [fetchBookings]);
+
+  // Live dynamic background sync without ghost reload
+  useLiveSync(() => {
+    void fetchBookings(true);
+  }, { enabled: Boolean(selectedLotId) });
 
   // Debounce search input for live asynchronous searching
   useEffect(() => {
@@ -315,6 +321,28 @@ export const SecurityManualLookupPage: React.FC = () => {
     }
   };
 
+  // Confirm Extension Cash at Exit
+  const [isConfirmingCashId, setIsConfirmingCashId] = useState<string | null>(null);
+  const handleConfirmExtensionCash = async (item: ManualBookingItem) => {
+    if (!selectedLotId || !item.pendingCashExtension) return;
+
+    try {
+      setIsConfirmingCashId(item.bookingId);
+      const res = await securityApi.confirmCashExtensionPayment({
+        parkingLotId: selectedLotId,
+        bookingId: item.bookingId,
+        paymentId: item.pendingCashExtension.paymentId,
+      });
+
+      toast.success(res.message || 'Extension cash payment confirmed successfully.');
+      fetchBookings();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to confirm extension cash payment.');
+    } finally {
+      setIsConfirmingCashId(null);
+    }
+  };
+
   // 7. Load Details Modal
   const openDetailModal = async (bookingId: string) => {
     if (!selectedLotId) return;
@@ -402,18 +430,6 @@ export const SecurityManualLookupPage: React.FC = () => {
               </Select>
             )}
           </div>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fetchBookings()}
-            disabled={loadingResults || !selectedLotId}
-            className="h-10 gap-1.5 text-xs border-border/80"
-            title="Refresh Bookings"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loadingResults ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
 
           <Link to="/security/scan">
             <Button size="sm" className="h-10 gap-1.5 text-xs bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm">
@@ -778,6 +794,23 @@ export const SecurityManualLookupPage: React.FC = () => {
                             >
                               <Banknote className="w-3.5 h-3.5" />
                               Collect Cash (₹{item.overstay.overstayCharge})
+                            </Button>
+                          )}
+
+                          {/* Extension Cash Collection Barrier */}
+                          {(isActive || isOverstay) && item.pendingCashExtension && (
+                            <Button
+                              size="sm"
+                              className="h-8 px-2.5 text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white gap-1 shadow-sm cursor-pointer"
+                              onClick={() => handleConfirmExtensionCash(item)}
+                              disabled={isConfirmingCashId === item.bookingId}
+                            >
+                              {isConfirmingCashId === item.bookingId ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Banknote className="w-3.5 h-3.5" />
+                              )}
+                              Confirm Extension Cash (₹{item.pendingCashExtension.amount.toFixed(2)})
                             </Button>
                           )}
 

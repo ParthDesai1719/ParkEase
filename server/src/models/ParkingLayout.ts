@@ -170,6 +170,11 @@ export const layoutElementSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Overflow / Extra bay designation
+    isOverflow: {
+      type: Boolean,
+      default: false,
+    },
     // Multi-storey vertical shaft properties (Lifts, Staircases, Core areas)
     occupiesAllFloors: {
       type: Boolean,

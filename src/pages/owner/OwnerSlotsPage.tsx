@@ -19,6 +19,7 @@ import {
   ShieldAlert,
   MapPin,
   ChevronRight,
+  Sparkles,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -35,6 +36,7 @@ import {
   type UpdateOwnerSlotStatusPayload,
 } from '@/api/owner.api';
 import { getSocket } from '@/lib/socket';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -82,7 +84,7 @@ export const OwnerSlotsPage: React.FC = () => {
   // Loading & Refreshing States
   const [isLoadingLots, setIsLoadingLots] = useState(true);
   const [isLoadingSlots, setIsLoadingSlots] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [, setIsRefreshing] = useState(false);
 
   // Filters & Search
   const [selectedFloorId, setSelectedFloorId] = useState<string>('ALL');
@@ -211,6 +213,10 @@ export const OwnerSlotsPage: React.FC = () => {
     void fetchSlotsData();
   }, [fetchSlotsData]);
 
+  useLiveSync(() => {
+    void fetchSlotsData(true);
+  });
+
   // 3. Socket.IO Real-time Slot Updates
   useEffect(() => {
     if (!selectedLotId) return;
@@ -299,7 +305,27 @@ export const OwnerSlotsPage: React.FC = () => {
     }
   };
 
-  // Helper formatting
+  // 6B. Toggle Overflow Bay Designation
+  const handleToggleOverflow = async (slot: OwnerSlotItem) => {
+    try {
+      setIsUpdatingStatus(true);
+      const targetIsOverflow = !slot.isOverflow;
+      await ownerApi.updateSlotOperationalStatus(slot._id, {
+        isOverflow: targetIsOverflow,
+      });
+      toast.success(
+        targetIsOverflow
+          ? `Slot ${slot.slotNumber} designated as an Overflow Bay (Universal fallback & transparent gray styling).`
+          : `Slot ${slot.slotNumber} reverted to a Regular Bay.`,
+      );
+      setActiveSlot((prev) => (prev && prev._id === slot._id ? { ...prev, isOverflow: targetIsOverflow } : prev));
+      void fetchSlotsData(false);
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || err.message || 'Failed to toggle overflow designation');
+    } finally {
+      setIsUpdatingStatus(false);
+    }
+  };
   const formatAddress = (addr: unknown): string => {
     if (!addr) return '—';
     if (typeof addr === 'string') return addr;
@@ -431,17 +457,6 @@ export const OwnerSlotsPage: React.FC = () => {
               </Link>
             </Button>
           )}
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void fetchSlotsData(true)}
-            disabled={isRefreshing || isLoadingSlots}
-            className="h-9 gap-1.5 text-xs"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
         </div>
       </div>
 
@@ -1077,6 +1092,37 @@ export const OwnerSlotsPage: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {/* Overflow Designation Toggle */}
+              <div className="pt-3 border-t border-border/60 flex items-center justify-between">
+                <div>
+                  <span className="font-semibold text-foreground text-xs flex items-center gap-1.5">
+                    Overflow Bay Designation
+                    {activeSlot.isOverflow ? (
+                      <Badge className="bg-slate-800 text-slate-200 border border-slate-600 font-mono text-[9px] px-1.5 py-0">
+                        Active (Universal)
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[9px] px-1.5 py-0 text-muted-foreground">
+                        Standard Bay
+                      </Badge>
+                    )}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground block">
+                    Universal fallback for overstay conflicts & walk-ins. Frozen for online customer booking.
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isUpdatingStatus || activeSlot.slotStatus === 'Occupied'}
+                  onClick={() => handleToggleOverflow(activeSlot)}
+                  className="text-xs h-8 gap-1.5 border-slate-700 hover:bg-slate-800 text-slate-200 shrink-0 font-medium cursor-pointer"
+                >
+                  <Sparkles className="h-3.5 w-3.5 text-slate-400" />
+                  {activeSlot.isOverflow ? 'Revert to Regular Bay' : 'Make Overflow Bay'}
+                </Button>
+              </div>
             </div>
           ) : null}
 
@@ -1195,7 +1241,9 @@ const SlotCard: React.FC<SlotCardProps> = ({ slot, onClick, onQuickStatusToggle 
   const isReserved = slot.slotStatus === 'Reserved';
   const isMaintenance = slot.slotStatus === 'Under Maintenance';
 
-  const cardBorderClass = isAvailable
+  const cardBorderClass = slot.isOverflow && isAvailable
+    ? 'border-slate-500/50 hover:border-slate-400 bg-slate-800/20 hover:bg-slate-800/30 border-dashed'
+    : isAvailable
     ? 'border-emerald-500/30 hover:border-emerald-500/60 bg-emerald-500/5 hover:bg-emerald-500/10'
     : isOccupied
     ? 'border-indigo-500/30 hover:border-indigo-500/60 bg-indigo-500/5 hover:bg-indigo-500/10'
@@ -1229,9 +1277,16 @@ const SlotCard: React.FC<SlotCardProps> = ({ slot, onClick, onQuickStatusToggle 
     >
       {/* Top Row: Slot Number & Vehicle Type Icon */}
       <div className="flex items-center justify-between gap-1 mb-1">
-        <span className="font-extrabold text-sm tracking-tight text-foreground truncate">
-          {slot.slotNumber}
-        </span>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="font-extrabold text-sm tracking-tight text-foreground truncate">
+            {slot.slotNumber}
+          </span>
+          {slot.isOverflow && (
+            <span className="text-[8px] font-mono px-1 py-0.2 rounded-xs bg-slate-800 text-slate-300 border border-slate-600 shrink-0">
+              OF
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-1 shrink-0">
           {getVehicleIcon(slot.supportedVehicleType)}
         </div>

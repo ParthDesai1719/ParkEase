@@ -8,7 +8,6 @@ import {
   Edit3,
   CheckCircle2,
   MapPin,
-  RefreshCw,
   Sparkles,
   ShieldAlert,
 } from 'lucide-react';
@@ -37,6 +36,7 @@ import {
   activateFacility,
   type OfficialParkingLot,
 } from '@/api/parkingLot.api';
+import { useLiveSync } from '@/hooks/useLiveSync';
 
 const formatAddress = (addr: OfficialParkingLot['address']): string => {
   if (!addr) return '';
@@ -48,7 +48,7 @@ export const OwnerParkingLotsPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const [parkingLots, setParkingLots] = useState<OfficialParkingLot[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [, setIsRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState(searchParams.get('q') || '');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(searchParams.get('q') || '');
   const [statusFilter, setStatusFilter] = useState<string>(searchParams.get('status') || 'ALL');
@@ -92,6 +92,10 @@ export const OwnerParkingLotsPage: React.FC = () => {
   useEffect(() => {
     void fetchLots();
   }, [fetchLots]);
+
+  useLiveSync(() => {
+    void fetchLots(true);
+  });
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -178,17 +182,6 @@ export const OwnerParkingLotsPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2.5">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void fetchLots(true)}
-            disabled={isRefreshing}
-            className="h-9 gap-1.5 text-xs"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-
           <Button asChild size="sm" className="h-9 gap-1.5 text-xs font-semibold shadow-xs">
             <Link to="/owner/parking/submissions/new">
               <PlusCircle className="h-3.5 w-3.5" />

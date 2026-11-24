@@ -132,6 +132,7 @@ export interface SubmissionInput {
 export interface GetAdminFacilitySubmissionsFilter {
   status?: string | undefined;
   search?: string | undefined;
+  ownerId?: string | undefined;
   page?: number | undefined;
   limit?: number | undefined;
   sortBy?: string | undefined;
@@ -1164,6 +1165,10 @@ class FacilitySubmissionService {
 
     if (filter.status && filter.status !== 'All') {
       query.submissionStatus = filter.status;
+    }
+
+    if (filter.ownerId && mongoose.Types.ObjectId.isValid(filter.ownerId)) {
+      query.ownerId = new mongoose.Types.ObjectId(filter.ownerId);
     }
 
     if (filter.search && filter.search.trim()) {

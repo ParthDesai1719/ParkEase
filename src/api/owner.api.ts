@@ -586,6 +586,7 @@ export interface OwnerSlotItem {
   slotStatus: 'Available' | 'Reserved' | 'Occupied' | 'Under Maintenance';
   qrIdentifier: string;
   remarks: string | null;
+  isOverflow?: boolean;
   parkingLotId: {
     _id: string;
     parkingName: string;
@@ -649,8 +650,9 @@ export interface OwnerSlotsResponseData {
 }
 
 export interface UpdateOwnerSlotStatusPayload {
-  slotStatus: 'Available' | 'Under Maintenance';
+  slotStatus?: 'Available' | 'Under Maintenance';
   remarks?: string | null;
+  isOverflow?: boolean;
 }
 
 export interface OwnerDashboardRecentBooking {

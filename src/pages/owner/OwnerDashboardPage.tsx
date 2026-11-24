@@ -1,687 +1,744 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Building2,
-  LayoutGrid,
-  Eye,
-  Edit3,
-  RefreshCw,
-  Trash2,
-  PlusCircle,
-  CheckCircle2,
-  Car,
-  IndianRupee,
-  Activity,
-  ArrowRight,
+  DollarSign,
   TrendingUp,
+  Car,
+  Clock,
+  CheckCircle2,
+  AlertTriangle,
+  AlertCircle,
+  Star,
+  Users,
+  Navigation,
+  Calendar,
+  Layers,
+  Sparkles,
+  MessageSquareQuote,
+  Settings,
+  Activity,
 } from 'lucide-react';
-import { format } from 'date-fns';
-import { toast } from 'sonner';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+} from 'recharts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useAuthStore } from '@/stores/authStore';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import {
-  getOwnerSubmissions,
-  deleteDraftSubmission,
-  type FacilitySubmissionData,
-} from '@/api/facilitySubmission.api';
-import {
-  getOwnerParkingLots,
-  type OfficialParkingLot,
-} from '@/api/parkingLot.api';
-import {
-  getOwnerDashboardStats,
-  type OwnerDashboardStatsData,
-} from '@/api/owner.api';
+  getOwnerDashboardAnalytics,
+  type OwnerDashboardAnalyticsParams,
+} from '@/api/ownerAnalytics.api';
 import { getSocket } from '@/lib/socket';
-
-const formatAddress = (addr: OfficialParkingLot['address']): string => {
-  if (!addr) return '';
-  if (typeof addr === 'string') return addr;
-  return [addr.street, addr.city, addr.state].filter(Boolean).join(', ');
-};
+import { cn } from '@/lib/utils';
 
 export const OwnerDashboardPage: React.FC = () => {
   const user = useAuthStore((state) => state.user);
+  const queryClient = useQueryClient();
 
-  // States
-  const [selectedLotFilter, setSelectedLotFilter] = useState<string>('all');
-  const [stats, setStats] = useState<OwnerDashboardStatsData | null>(null);
-  const [submissions, setSubmissions] = useState<FacilitySubmissionData[]>([]);
-  const [parkingLots, setParkingLots] = useState<OfficialParkingLot[]>([]);
+  // Filters State
+  const [selectedLotId, setSelectedLotId] = useState<string>('all');
+  const [rangePreset, setRangePreset] = useState<'today' | 'this_week' | 'this_month' | 'this_year' | 'custom'>('this_month');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
 
-  const [isLoading, setIsLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [draftToDelete, setDraftToDelete] = useState<FacilitySubmissionData | null>(null);
-  const [isDeletingDraft, setIsDeletingDraft] = useState(false);
+  // 1. Fetch Comprehensive Dashboard Analytics
+  const queryParams: OwnerDashboardAnalyticsParams = {
+    parkingLotId: selectedLotId !== 'all' ? selectedLotId : undefined,
+    rangePreset,
+    dateFrom: rangePreset === 'custom' && dateFrom ? dateFrom : undefined,
+    dateTo: rangePreset === 'custom' && dateTo ? dateTo : undefined,
+  };
 
-  // Fetch Dashboard Stats & Lists
-  const fetchData = useCallback(async (isManual = false) => {
-    try {
-      if (isManual) {
-        setIsRefreshing(true);
-      }
-      const [statsRes, subsRes, lotsRes] = await Promise.allSettled([
-        getOwnerDashboardStats(selectedLotFilter),
-        getOwnerSubmissions(),
-        getOwnerParkingLots({ limit: 50 }),
-      ]);
+  const {
+    data: dashboardData,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
+    queryKey: ['owner-analytics-dashboard', selectedLotId, rangePreset, dateFrom, dateTo],
+    queryFn: () => getOwnerDashboardAnalytics(queryParams),
+  });
 
-      if (statsRes.status === 'fulfilled') {
-        setStats(statsRes.value);
-      }
-      if (subsRes.status === 'fulfilled') {
-        setSubmissions(subsRes.value);
-      }
-      if (
-        lotsRes.status === 'fulfilled' &&
-        lotsRes.value?.success &&
-        lotsRes.value?.data?.parkingLots
-      ) {
-        setParkingLots(lotsRes.value.data.parkingLots);
-      }
+  useLiveSync(() => {
+    void refetch();
+  });
 
-      if (isManual) {
-        toast.success('Dashboard metrics refreshed.');
-      }
-    } catch {
-      // Handled silently
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }, [selectedLotFilter]);
-
-  useEffect(() => {
-    void fetchData();
-  }, [fetchData]);
-
-  // Real-time socket updates and visibility polling
+  // 2. Real-Time Socket.IO Synchronization
   useEffect(() => {
     const socket = getSocket();
-    if (user?._id) {
-      socket.emit('join_owner', user._id);
-    }
-
-    const handleStatusChanged = () => {
-      void fetchData();
+    const handleSync = () => {
+      void queryClient.invalidateQueries({ queryKey: ['owner-analytics-dashboard'] });
     };
 
-    socket.on('facility_status_changed', handleStatusChanged);
-    socket.on('booking_status_updated', handleStatusChanged);
-
-    const onFocus = () => {
-      void fetchData();
-    };
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        void fetchData();
-      }
-    };
-
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisibilityChange);
-
-    const interval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        void fetchData();
-      }
-    }, 10000);
+    socket.on('facility_status_changed', handleSync);
+    socket.on('booking_updated', handleSync);
+    socket.on('booking_status_changed', handleSync);
+    socket.on('slot_availability_updated', handleSync);
+    socket.on('slot_status_changed', handleSync);
+    socket.on('live_vehicle_update', handleSync);
 
     return () => {
-      socket.off('facility_status_changed', handleStatusChanged);
-      socket.off('booking_status_updated', handleStatusChanged);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      clearInterval(interval);
+      socket.off('facility_status_changed', handleSync);
+      socket.off('booking_updated', handleSync);
+      socket.off('booking_status_changed', handleSync);
+      socket.off('slot_availability_updated', handleSync);
+      socket.off('slot_status_changed', handleSync);
+      socket.off('live_vehicle_update', handleSync);
     };
-  }, [user?._id, fetchData]);
+  }, [queryClient]);
 
-  const confirmDeleteDraft = async () => {
-    if (!draftToDelete?._id) return;
-    setIsDeletingDraft(true);
-    try {
-      await deleteDraftSubmission(draftToDelete._id);
-      setSubmissions((prev) => prev.filter((s) => s._id !== draftToDelete._id));
-      toast.success(`Draft "${draftToDelete.facilityName || 'Draft'}" deleted successfully.`);
-      setDraftToDelete(null);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to delete draft.';
-      toast.error(msg);
-    } finally {
-      setIsDeletingDraft(false);
-    }
-  };
-
-  const pendingReviewLots = parkingLots.filter((l) => l.layoutReviewStatus === 'Pending Owner Review');
-  const confirmedReadyLots = parkingLots.filter(
-    (l) => l.layoutReviewStatus === 'Owner Confirmed' && l.parkingStatus !== 'Active',
-  );
-
-  const getBookingStatusBadge = (status: string) => {
-    switch (status) {
-      case 'Confirmed':
-        return <Badge className="bg-sky-600/10 text-sky-600 border-sky-600/30 text-[10px]">Confirmed</Badge>;
-      case 'Active':
-      case 'Checked In':
-        return <Badge className="bg-emerald-600/10 text-emerald-600 border-emerald-600/30 text-[10px]">Checked In</Badge>;
-      case 'Completed':
-        return <Badge className="bg-blue-600/10 text-blue-600 border-blue-600/30 text-[10px]">Completed</Badge>;
-      case 'Cancelled':
-        return <Badge className="bg-destructive/10 text-destructive border-destructive/30 text-[10px]">Cancelled</Badge>;
-      case 'No Show':
-        return <Badge className="bg-amber-600/10 text-amber-600 border-amber-600/30 text-[10px]">No Show</Badge>;
-      case 'Overstay':
-        return <Badge className="bg-rose-600/10 text-rose-600 border-rose-600/30 text-[10px]">Overstay</Badge>;
-      default:
-        return <Badge variant="secondary" className="text-[10px]">{status}</Badge>;
-    }
-  };
-
-  const getSubmissionStatusBadge = (status?: string) => {
-    switch (status) {
-      case 'Submitted':
-        return <Badge className="bg-sky-600/10 text-sky-600 border-sky-600/30 text-[10px]">Submitted</Badge>;
-      case 'Under Review':
-        return <Badge className="bg-blue-600/10 text-blue-600 border-blue-600/30 text-[10px]">Under Review</Badge>;
-      case 'Changes Requested':
-        return <Badge className="bg-amber-600/10 text-amber-600 border-amber-600/30 text-[10px]">Changes Requested</Badge>;
-      case 'Approved':
-        return <Badge className="bg-emerald-600/10 text-emerald-600 border-emerald-600/30 text-[10px]">Approved</Badge>;
-      case 'Rejected':
-        return <Badge className="bg-destructive/10 text-destructive border-destructive/30 text-[10px]">Rejected</Badge>;
-      default:
-        return <Badge variant="secondary" className="text-[10px]">{status || 'Draft'}</Badge>;
-    }
-  };
+  const ownerLots = dashboardData?.ownerLots || [];
+  const kpis = dashboardData?.kpis;
+  const revenueTrends = dashboardData?.revenueTrends || [];
+  const floorOccupancy = dashboardData?.floorOccupancy || [];
+  const recentBookings = dashboardData?.recentBookings || [];
+  const recentReviews = dashboardData?.recentReviews || [];
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 space-y-8">
-      {/* 1. TOP HEADER & PARKING LOT SWITCHER */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border/80 pb-6">
+    <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-8 animate-in fade-in-50 duration-300 pb-16">
+      {/* --------------------------------------------------------------------- */}
+      {/* 1. PROFESSIONAL COMMAND HEADER & CONTROLS */}
+      {/* --------------------------------------------------------------------- */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-border/80 pb-6">
         <div>
           <div className="flex items-center gap-2 mb-1.5">
-            <Badge variant="outline" className="border-primary/30 text-primary bg-primary/5">
-              Parking Owner Portal
+            <Badge variant="outline" className="border-primary/40 text-primary bg-primary/10 font-bold text-xs">
+              <Sparkles className="w-3 h-3 mr-1" />
+              Business Command Center
             </Badge>
-            {stats && stats.parkingLotsSummary.length > 0 && (
-              <Badge variant="secondary" className="text-xs">
-                {stats.parkingLotsSummary.length} Active {stats.parkingLotsSummary.length === 1 ? 'Facility' : 'Facilities'}
-              </Badge>
-            )}
+            <span className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+              Live Telemetry
+            </span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
-            Operational Dashboard
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-foreground flex items-center gap-2.5">
+            Welcome back, {user?.fullName?.split(' ')[0] || 'Owner'}
           </h1>
-          <p className="text-xs text-muted-foreground sm:text-sm">
-            Live slot occupancy, daily bookings, revenue figures, and parking lot management.
+          <p className="text-xs sm:text-sm font-medium text-muted-foreground mt-1">
+            Real-time financial performance, slot occupancy, fleet operations, and customer sentiment.
           </p>
         </div>
 
-        {/* PARKING LOT SWITCHER & REFRESH */}
-        <div className="flex flex-wrap items-center gap-3">
-          {stats && stats.parkingLotsSummary.length > 0 && (
-            <div className="min-w-[220px]">
-              <Select value={selectedLotFilter} onValueChange={setSelectedLotFilter}>
-                <SelectTrigger className="h-9 text-xs">
-                  <SelectValue placeholder="Select Facility" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Facilities (Consolidated)</SelectItem>
-                  {stats.parkingLotsSummary.map((lot) => (
-                    <SelectItem key={lot._id} value={lot._id}>
-                      {lot.parkingName} ({lot.totalSlots} Slots)
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Link to="/owner/live-vehicles">
+            <Button
+              size="sm"
+              className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-xs gap-1.5 h-9 shadow-xs"
+            >
+              <Navigation className="w-4 h-4" />
+              Live Vehicle Locator &rarr;
+            </Button>
+          </Link>
+        </div>
+      </div>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void fetchData(true)}
-            disabled={isRefreshing}
-            className="h-9 gap-1.5 text-xs"
+      {/* ERROR BANNER */}
+      {isError && (
+        <Card className="border-rose-500/40 bg-rose-500/5">
+          <CardContent className="flex items-center justify-between py-3 px-4 text-rose-600 text-xs">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>
+                {(error as any)?.response?.data?.message ||
+                  (error as any)?.message ||
+                  'Failed to load owner dashboard analytics.'}
+              </span>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => refetch()} className="h-7 text-xs">
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* NO ACTIVE LOTS NOTICE */}
+      {!isLoading && !isError && ownerLots.length === 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-800 dark:text-amber-300 text-xs font-semibold">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+            <span>No approved or active parking facilities found for this account. Create or activate a parking lot to start collecting live metrics.</span>
+          </div>
+          <Link
+            to="/owner/parking/submissions"
+            className="text-primary hover:underline font-bold text-xs shrink-0"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-
-          <Button asChild size="sm" className="h-9 gap-1.5 text-xs font-semibold shadow-xs">
-            <Link to="/owner/parking/submissions/new">
-              <PlusCircle className="h-3.5 w-3.5" />
-              New Facility
-            </Link>
-          </Button>
-        </div>
-      </div>
-
-      {/* 2. ACTION REQUIRED ALERTS */}
-      {pendingReviewLots.length > 0 && (
-        <div className="rounded-xl border border-sky-500/40 bg-sky-500/10 p-4 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="rounded-full bg-sky-500/20 p-2 text-sky-600 dark:text-sky-400 shrink-0">
-              <Eye className="h-5 w-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-foreground">
-                Action Required: 2D Layout Plan Ready for Review ({pendingReviewLots.length})
-              </h3>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                The platform administration has published an official 2D layout. Please inspect and confirm the layout to unlock live activation.
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {pendingReviewLots.map((lot) => (
-              <Button asChild key={lot._id} size="sm" className="bg-sky-600 hover:bg-sky-700 text-white gap-1.5 text-xs font-semibold">
-                <Link to={`/owner/parking-lots/${lot._id}/layout`}>
-                  <Eye className="h-3.5 w-3.5" />
-                  Review {lot.parkingName}
-                </Link>
-              </Button>
-            ))}
-          </div>
+            Go to Submissions &rarr;
+          </Link>
         </div>
       )}
 
-      {confirmedReadyLots.length > 0 && (
-        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="rounded-full bg-emerald-500/20 p-2 text-emerald-600 dark:text-emerald-400 shrink-0">
-              <CheckCircle2 className="h-5 w-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-foreground">
-                Layout Confirmed &mdash; Facility Ready for Go-Live Activation ({confirmedReadyLots.length})
-              </h3>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Layout review is complete. You may now activate this parking facility to make it publicly discoverable to customers.
-              </p>
+      {/* --------------------------------------------------------------------- */}
+      {/* 2. DASHBOARD-LEVEL FILTER BAR (Facility Switcher + Date Range Presets) */}
+      {/* --------------------------------------------------------------------- */}
+      <Card className="rounded-xl border border-border/80 bg-card p-4 sm:p-5 shadow-2xs space-y-4">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          {/* Facility Selector */}
+          <div className="flex items-center gap-2.5 w-full md:w-auto">
+            <Building2 className="w-4 h-4 text-primary shrink-0" />
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-muted-foreground">Facility:</span>
+              <select
+                value={selectedLotId}
+                onChange={(e) => setSelectedLotId(e.target.value)}
+                className="h-9 rounded-lg border border-border bg-background px-3 py-1 text-xs font-bold text-foreground shadow-2xs focus:border-primary focus:outline-none min-w-[220px]"
+              >
+                <option value="all">All Facilities ({ownerLots.length} Active)</option>
+                {ownerLots.map((lot) => (
+                  <option key={lot._id} value={lot._id}>
+                    {lot.parkingName} ({lot.totalSlots} bays)
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {confirmedReadyLots.map((lot) => (
-              <Button asChild key={lot._id} size="sm" className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5 text-xs font-semibold">
-                <Link to={`/owner/parking-lots/${lot._id}/layout`}>
-                  <Activity className="h-3.5 w-3.5" />
-                  Activate {lot.parkingName}
-                </Link>
-              </Button>
+
+          {/* Date Presets */}
+          <div className="flex flex-wrap items-center gap-1.5 w-full md:w-auto justify-start md:justify-end">
+            <span className="text-xs font-bold text-muted-foreground mr-1">Period:</span>
+            {[
+              { id: 'today', label: 'Today' },
+              { id: 'this_week', label: 'This Week' },
+              { id: 'this_month', label: 'This Month' },
+              { id: 'this_year', label: 'This Year' },
+              { id: 'custom', label: 'Custom' },
+            ].map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setRangePreset(p.id as any)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer shadow-2xs',
+                  rangePreset === p.id
+                    ? 'bg-primary text-primary-foreground border-primary'
+                    : 'bg-card text-foreground border-border hover:bg-muted/70',
+                )}
+              >
+                {p.label}
+              </button>
             ))}
           </div>
         </div>
-      )}
 
-      {/* 3. REAL-TIME KPI METRICS (TASK 2) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Total Slots */}
-        <Card className="shadow-xs border-border/80">
-          <CardContent className="p-5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Total Slots</span>
-              <div className="rounded-lg bg-primary/10 p-2 text-primary">
-                <LayoutGrid className="h-4 w-4" />
-              </div>
-            </div>
-            <div className="mt-3">
-              <div className="text-2xl font-bold tracking-tight text-foreground">
-                {isLoading ? '...' : (stats?.totalSlots ?? 0)}
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                {stats?.availableSlots ?? 0} Available &bull; {stats?.occupiedSlots ?? 0} Occupied
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Live Occupancy Rate */}
-        <Card className="shadow-xs border-border/80">
-          <CardContent className="p-5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Occupancy Rate</span>
-              <div className="rounded-lg bg-sky-500/10 p-2 text-sky-600 dark:text-sky-400">
-                <TrendingUp className="h-4 w-4" />
-              </div>
-            </div>
-            <div className="mt-3">
-              <div className="text-2xl font-bold tracking-tight text-foreground">
-                {isLoading ? '...' : `${stats?.occupancyPercentage ?? 0}%`}
-              </div>
-              <div className="mt-2 h-1.5 w-full bg-muted rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-sky-500 rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min(100, stats?.occupancyPercentage ?? 0)}%` }}
-                />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Today's Bookings */}
-        <Card className="shadow-xs border-border/80">
-          <CardContent className="p-5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Today's Bookings</span>
-              <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-600 dark:text-emerald-400">
-                <Car className="h-4 w-4" />
-              </div>
-            </div>
-            <div className="mt-3">
-              <div className="text-2xl font-bold tracking-tight text-foreground">
-                {isLoading ? '...' : (stats?.todayBookingsCount ?? 0)}
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                Reservations scheduled today
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Today's Revenue */}
-        <Card className="shadow-xs border-border/80">
-          <CardContent className="p-5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-muted-foreground">Today's Revenue</span>
-              <div className="rounded-lg bg-amber-500/10 p-2 text-amber-600 dark:text-amber-400">
-                <IndianRupee className="h-4 w-4" />
-              </div>
-            </div>
-            <div className="mt-3">
-              <div className="text-2xl font-bold tracking-tight text-foreground">
-                {isLoading ? '...' : `₹${stats?.todayRevenue?.toLocaleString('en-IN') ?? 0}`}
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                Active Staff: <span className="font-semibold text-foreground">{stats?.activeSecurityStaffCount ?? 0}</span>
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* 4. RECENT BOOKINGS TABLE (TASK 2) */}
-      <Card className="shadow-xs border-border/80">
-        <CardHeader className="flex flex-row items-center justify-between pb-3 border-b border-border/60">
-          <div>
-            <CardTitle className="text-base font-bold text-foreground">Recent Bookings</CardTitle>
-            <CardDescription className="text-xs text-muted-foreground">
-              Live reservations and visitor movements across your parking facilities
-            </CardDescription>
+        {/* Custom Date Pickers */}
+        {rangePreset === 'custom' && (
+          <div className="flex flex-wrap items-center gap-2.5 pt-3 border-t border-border/70 text-xs animate-in fade-in-50 duration-200">
+            <Calendar className="w-4 h-4 text-primary" />
+            <span className="font-bold text-muted-foreground">Custom Range:</span>
+            <Input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="h-8 text-xs font-semibold w-36 bg-background"
+            />
+            <span className="text-muted-foreground font-bold">to</span>
+            <Input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="h-8 text-xs font-semibold w-36 bg-background"
+            />
           </div>
-          {stats && stats.recentBookings.length > 0 && (
-            <Badge variant="outline" className="text-xs font-normal">
-              Latest {stats.recentBookings.length}
-            </Badge>
-          )}
-        </CardHeader>
-        <CardContent className="p-0">
-          {isLoading ? (
-            <div className="py-12 text-center text-xs text-muted-foreground">
-              Loading recent bookings...
-            </div>
-          ) : !stats?.recentBookings || stats.recentBookings.length === 0 ? (
-            <div className="py-12 text-center text-xs text-muted-foreground">
-              No bookings recorded yet for this facility.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-muted/40 text-muted-foreground border-b border-border/60">
-                  <tr>
-                    <th className="py-3 px-4 font-semibold">Reference</th>
-                    <th className="py-3 px-4 font-semibold">Customer</th>
-                    <th className="py-3 px-4 font-semibold">Vehicle</th>
-                    <th className="py-3 px-4 font-semibold">Slot / Facility</th>
-                    <th className="py-3 px-4 font-semibold">Schedule</th>
-                    <th className="py-3 px-4 font-semibold">Amount</th>
-                    <th className="py-3 px-4 font-semibold">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {stats.recentBookings.map((b) => (
-                    <tr key={b._id} className="hover:bg-muted/20 transition-colors">
-                      <td className="py-3 px-4 font-mono font-medium text-foreground">
-                        {b.bookingReference}
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="font-medium text-foreground">{b.customer?.fullName || 'Guest'}</div>
-                        <div className="text-[11px] text-muted-foreground">{b.customer?.mobileNumber || b.customer?.email}</div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="font-mono font-medium text-foreground">{b.vehicle?.vehicleNumber || '—'}</span>
-                        <span className="text-[11px] text-muted-foreground ml-1.5">({b.vehicle?.vehicleType || 'Car'})</span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="font-medium text-foreground">
-                          Slot {b.slot?.slotNumber || b.slot?.slotLabel || '—'}
-                        </div>
-                        <div className="text-[11px] text-muted-foreground">
-                          {b.parkingLot?.parkingName || 'Facility'}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-muted-foreground">
-                        <div>{format(new Date(b.scheduledEntryTime), 'dd MMM, HH:mm')}</div>
-                        <div className="text-[11px]">&rarr; {format(new Date(b.scheduledExitTime), 'HH:mm')}</div>
-                      </td>
-                      <td className="py-3 px-4 font-semibold text-foreground">
-                        ₹{b.totalAmount}
-                      </td>
-                      <td className="py-3 px-4">
-                        {getBookingStatusBadge(b.bookingStatus)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
+        )}
       </Card>
 
-      {/* 5. OFFICIAL PARKING LOTS QUICK ACCESS (TASK 3) */}
-      <Card className="shadow-xs border-border/80">
-        <CardHeader className="flex flex-row items-center justify-between pb-3 border-b border-border/60">
-          <div>
-            <CardTitle className="text-base font-bold text-foreground">My Official Parking Lots</CardTitle>
-            <CardDescription className="text-xs text-muted-foreground">
-              Official facilities created, published, and managed under your account
-            </CardDescription>
-          </div>
-          <Button asChild variant="outline" size="sm" className="text-xs gap-1">
-            <Link to="/owner/parking-lots">
-              View All <ArrowRight className="h-3.5 w-3.5 ml-1" />
-            </Link>
-          </Button>
-        </CardHeader>
-        <CardContent className="p-4 sm:p-6">
-          {parkingLots.length === 0 ? (
-            <div className="text-center py-8 text-xs text-muted-foreground">
-              No official parking lots created yet. Official lots are provisioned upon approval of facility submissions.
+      {/* --------------------------------------------------------------------- */}
+      {/* 3. BUSINESS PERFORMANCE KPI CARDS */}
+      {/* --------------------------------------------------------------------- */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* KPI 1: Gross & Net Revenue */}
+        <Link to="/owner/revenue" className="block group">
+          <Card className="rounded-xl border border-border/80 bg-card p-5 shadow-2xs h-full flex flex-col justify-between hover:border-primary/50 transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">
+                Total Revenue
+              </span>
+              <div className="p-2 rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 group-hover:scale-105 transition-transform">
+                <TrendingUp className="w-4 h-4" />
+              </div>
             </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {parkingLots.map((lot) => (
-                <div
-                  key={lot._id}
-                  className="rounded-xl border border-border/70 bg-card p-4 shadow-2xs hover:border-primary/40 transition-all flex flex-col justify-between"
+            <div className="my-2">
+              <p className="text-2xl sm:text-3xl font-black text-foreground tracking-tight">
+                {isLoading ? <Skeleton className="h-8 w-24" /> : `₹${(kpis?.totalRevenue || 0).toLocaleString('en-IN')}`}
+              </p>
+              <div className="flex items-center gap-1.5 mt-1 text-xs">
+                <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                  ₹{(kpis?.netRevenue || 0).toLocaleString('en-IN')}
+                </span>
+                <span className="text-muted-foreground text-[11px]">Net Earnings</span>
+              </div>
+            </div>
+            <div className="border-t border-border/60 pt-2 flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
+              <span>{kpis?.successfulPayments || 0} Successful Txns</span>
+              <span className="text-primary font-bold group-hover:translate-x-0.5 transition-transform flex items-center">
+                Financials &rarr;
+              </span>
+            </div>
+          </Card>
+        </Link>
+
+        {/* KPI 2: Live Occupancy Rate */}
+        <Link to="/owner/live-vehicles" className="block group">
+          <Card className="rounded-xl border border-border/80 bg-card p-5 shadow-2xs h-full flex flex-col justify-between hover:border-primary/50 transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">
+                Occupancy Rate
+              </span>
+              <div className="p-2 rounded-xl bg-blue-500/15 text-blue-600 dark:text-blue-400 group-hover:scale-105 transition-transform">
+                <Car className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="my-2">
+              <p className="text-2xl sm:text-3xl font-black text-foreground tracking-tight">
+                {isLoading ? <Skeleton className="h-8 w-20" /> : `${kpis?.occupancyRate || 0}%`}
+              </p>
+              <div className="flex items-center gap-1.5 mt-1 text-xs">
+                <span className="font-bold text-blue-700 dark:text-blue-400">
+                  {kpis?.occupiedSlots || 0} / {kpis?.totalSlots || 0}
+                </span>
+                <span className="text-muted-foreground text-[11px]">Bays Parked</span>
+              </div>
+            </div>
+            <div className="border-t border-border/60 pt-2 flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
+              <span className="text-emerald-600 font-bold">{kpis?.availableSlots || 0} Available</span>
+              <span className="text-primary font-bold group-hover:translate-x-0.5 transition-transform flex items-center">
+                Locator &rarr;
+              </span>
+            </div>
+          </Card>
+        </Link>
+
+        {/* KPI 3: Booking Activity */}
+        <Link to="/owner/bookings" className="block group">
+          <Card className="rounded-xl border border-border/80 bg-card p-5 shadow-2xs h-full flex flex-col justify-between hover:border-primary/50 transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">
+                Total Bookings
+              </span>
+              <div className="p-2 rounded-xl bg-primary/15 text-primary group-hover:scale-105 transition-transform">
+                <Calendar className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="my-2">
+              <p className="text-2xl sm:text-3xl font-black text-foreground tracking-tight">
+                {isLoading ? <Skeleton className="h-8 w-20" /> : kpis?.totalBookings || 0}
+              </p>
+              <div className="flex items-center gap-1.5 mt-1 text-xs">
+                <span className="font-bold text-primary">
+                  {kpis?.activeBookings || 0} Active
+                </span>
+                <span className="text-muted-foreground text-[11px]">In Facility Now</span>
+              </div>
+            </div>
+            <div className="border-t border-border/60 pt-2 flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
+              <span>{kpis?.completedBookings || 0} Completed</span>
+              <span className="text-primary font-bold group-hover:translate-x-0.5 transition-transform flex items-center">
+                Bookings &rarr;
+              </span>
+            </div>
+          </Card>
+        </Link>
+
+        {/* KPI 4: Overstay & Fleet Health */}
+        <Link to="/owner/vehicles" className="block group">
+          <Card
+            className={cn(
+              'rounded-xl border p-5 shadow-2xs h-full flex flex-col justify-between transition-all',
+              kpis?.overstayCount && kpis.overstayCount > 0
+                ? 'border-rose-500/40 bg-rose-500/5 hover:border-rose-500'
+                : 'border-border/80 bg-card hover:border-primary/50',
+            )}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground">
+                Overstay Alerts
+              </span>
+              <div
+                className={cn(
+                  'p-2 rounded-xl group-hover:scale-105 transition-transform',
+                  kpis?.overstayCount && kpis.overstayCount > 0
+                    ? 'bg-rose-500/20 text-rose-600 animate-pulse'
+                    : 'bg-muted text-muted-foreground',
+                )}
+              >
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+            </div>
+            <div className="my-2">
+              <p className="text-2xl sm:text-3xl font-black text-foreground tracking-tight">
+                {isLoading ? <Skeleton className="h-8 w-20" /> : kpis?.overstayCount || 0}
+              </p>
+              <div className="flex items-center gap-1.5 mt-1 text-xs">
+                <span
+                  className={cn(
+                    'font-bold text-[11px]',
+                    kpis?.overstayCount && kpis.overstayCount > 0 ? 'text-rose-600' : 'text-emerald-600',
+                  )}
                 >
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
+                  {kpis?.overstayCount && kpis.overstayCount > 0 ? 'Exceeded Grace Period' : 'All Clear — 0 Overstays'}
+                </span>
+              </div>
+            </div>
+            <div className="border-t border-border/60 pt-2 flex items-center justify-between text-[11px] font-semibold text-muted-foreground">
+              <span>Exit Billing Active</span>
+              <span className="text-primary font-bold group-hover:translate-x-0.5 transition-transform flex items-center">
+                Vehicles &rarr;
+              </span>
+            </div>
+          </Card>
+        </Link>
+      </div>
+
+      {/* --------------------------------------------------------------------- */}
+      {/* 4. DUAL CHARTS: REVENUE OVER TIME & OCCUPANCY BREAKDOWN */}
+      {/* --------------------------------------------------------------------- */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Revenue Analytics Chart (7 Columns) */}
+        <Card className="lg:col-span-7 rounded-xl border border-border/80 bg-card p-5 shadow-2xs flex flex-col justify-between">
+          <CardHeader className="p-0 pb-4 flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-base font-extrabold text-foreground flex items-center gap-2">
+                <DollarSign className="w-4 h-4 text-primary" />
+                Revenue Over Time
+              </CardTitle>
+              <CardDescription className="text-xs text-muted-foreground mt-0.5">
+                Aggregated verified booking receipts and processed refunds.
+              </CardDescription>
+            </div>
+            <Badge variant="outline" className="font-mono text-xs border-border">
+              {rangePreset.toUpperCase().replace('_', ' ')}
+            </Badge>
+          </CardHeader>
+
+          <CardContent className="p-0 flex-1 min-h-[260px] flex items-center justify-center">
+            {isLoading ? (
+              <Skeleton className="h-64 w-full rounded-xl" />
+            ) : revenueTrends.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground text-xs">
+                <TrendingUp className="w-10 h-10 mx-auto text-muted-foreground/30 mb-2" />
+                No revenue transactions recorded for the selected period.
+              </div>
+            ) : (
+              <div className="w-full h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={revenueTrends} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="ownerRevGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#f97316" stopOpacity={0.3} />
+                        <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" opacity={0.6} />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fontSize: 10, fill: '#64748b' }}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 10, fill: '#64748b' }}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(val) => `₹${val}`}
+                    />
+                    <Tooltip
+                      formatter={(val: any) => [`₹${Number(val).toLocaleString('en-IN')}`, 'Revenue']}
+                      contentStyle={{
+                        borderRadius: '0.75rem',
+                        border: '1px solid #e2e8f0',
+                        fontSize: '11px',
+                        fontWeight: 'bold',
+                      }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="revenue"
+                      stroke="#f97316"
+                      strokeWidth={2.5}
+                      fillOpacity={1}
+                      fill="url(#ownerRevGrad)"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Occupancy Analytics & Floor Breakdown (5 Columns) */}
+        <Card className="lg:col-span-5 rounded-xl border border-border/80 bg-card p-5 shadow-2xs flex flex-col justify-between">
+          <CardHeader className="p-0 pb-4 flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-base font-extrabold text-foreground flex items-center gap-2">
+                <Layers className="w-4 h-4 text-primary" />
+                Occupancy Breakdown
+              </CardTitle>
+              <CardDescription className="text-xs text-muted-foreground mt-0.5">
+                Current real-time slot state distribution across facilities.
+              </CardDescription>
+            </div>
+            <Link to="/owner/slots">
+              <span className="text-xs font-bold text-primary hover:underline">Manage Slots &rarr;</span>
+            </Link>
+          </CardHeader>
+
+          <CardContent className="p-0 space-y-4">
+            {/* 4 Status Chips Strip */}
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-between">
+                <span className="font-bold text-blue-900 dark:text-blue-300">Parked Inside</span>
+                <span className="font-mono font-black text-blue-900 dark:text-blue-300">{kpis?.occupiedSlots || 0}</span>
+              </div>
+              <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between">
+                <span className="font-bold text-amber-900 dark:text-amber-300">Reserved</span>
+                <span className="font-mono font-black text-amber-900 dark:text-amber-300">{kpis?.reservedSlots || 0}</span>
+              </div>
+              <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between">
+                <span className="font-bold text-emerald-900 dark:text-emerald-300">Available</span>
+                <span className="font-mono font-black text-emerald-900 dark:text-emerald-300">{kpis?.availableSlots || 0}</span>
+              </div>
+              <div className="p-2.5 rounded-lg bg-muted border border-border flex items-center justify-between">
+                <span className="font-semibold text-muted-foreground">Maintenance</span>
+                <span className="font-mono font-bold text-foreground">{kpis?.maintenanceSlots || 0}</span>
+              </div>
+            </div>
+
+            {/* Floor Breakdown Progress Bars */}
+            <div className="space-y-2 pt-1 border-t border-border/60">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground block">
+                Floor-Level Occupancy
+              </span>
+              {floorOccupancy.length === 0 ? (
+                <p className="text-xs text-muted-foreground font-medium py-3">No floor data available.</p>
+              ) : (
+                floorOccupancy.slice(0, 4).map((floor) => (
+                  <div key={floor.floorId} className="space-y-1 text-xs">
+                    <div className="flex items-center justify-between font-bold text-foreground">
+                      <span>{floor.floorName}</span>
+                      <span className="font-mono text-[11px]">
+                        {floor.occupiedSlots} / {floor.totalSlots} ({floor.occupancyPercentage}%)
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className={cn(
+                          'h-full rounded-full transition-all duration-500',
+                          floor.occupancyPercentage > 85 ? 'bg-rose-500' : 'bg-primary',
+                        )}
+                        style={{ width: `${floor.occupancyPercentage}%` }}
+                      />
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* --------------------------------------------------------------------- */}
+      {/* 5. DUAL ACTIVITY & REPUTATION: RECENT BOOKINGS & CUSTOMER REVIEWS */}
+      {/* --------------------------------------------------------------------- */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left: Recent Business Activity & Live Bookings (7 cols) */}
+        <Card className="lg:col-span-7 rounded-xl border border-border/80 bg-card p-5 shadow-2xs flex flex-col justify-between">
+          <CardHeader className="p-0 pb-4 flex flex-row items-center justify-between border-b border-border/60">
+            <div>
+              <CardTitle className="text-base font-extrabold text-foreground flex items-center gap-2">
+                <Activity className="w-4 h-4 text-primary" />
+                Live Business Activity
+              </CardTitle>
+              <CardDescription className="text-xs text-muted-foreground mt-0.5">
+                Most recent customer reservations and drive-in checkout activity.
+              </CardDescription>
+            </div>
+            <Link to="/owner/bookings">
+              <span className="text-xs font-bold text-primary hover:underline">View All &rarr;</span>
+            </Link>
+          </CardHeader>
+
+          <CardContent className="p-0 pt-3">
+            {isLoading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-10 w-full rounded-lg" />
+                ))}
+              </div>
+            ) : recentBookings.length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-10 font-medium">
+                No recent booking transactions found.
+              </p>
+            ) : (
+              <div className="divide-y divide-border/60">
+                {recentBookings.map((b) => (
+                  <div key={b._id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary border border-primary/20 flex items-center justify-center font-mono font-bold text-xs shrink-0">
+                        {b.vehicleNumber.slice(0, 2) || 'PB'}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 font-bold text-foreground truncate">
+                          <span className="font-mono text-primary">{b.bookingReference}</span>
+                          <span className="text-muted-foreground">&bull;</span>
+                          <span className="truncate">{b.customerName}</span>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground font-semibold truncate mt-0.5">
+                          {b.parkingLotName} &bull; Bay: <span className="text-foreground">{b.slotNumber}</span> &bull;{' '}
+                          Plate: <span className="font-mono text-foreground">{b.vehicleNumber}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <span className="font-mono font-extrabold text-foreground text-xs block">
+                        ₹{b.totalAmount}
+                      </span>
                       <Badge
                         variant="outline"
-                        className={
-                          lot.parkingStatus === 'Active'
-                            ? 'border-emerald-500/40 text-emerald-600 bg-emerald-500/10 text-[10px]'
-                            : 'border-muted text-muted-foreground text-[10px]'
-                        }
+                        className={cn(
+                          'text-[9px] font-bold py-0 h-4',
+                          b.bookingStatus === 'Active' || b.bookingStatus === 'Checked In'
+                            ? 'border-blue-500 text-blue-600'
+                            : b.bookingStatus === 'Completed'
+                            ? 'border-emerald-500 text-emerald-600'
+                            : 'border-border text-muted-foreground',
+                        )}
                       >
-                        {lot.parkingStatus}
+                        {b.bookingStatus}
                       </Badge>
-                      <span className="text-xs font-semibold text-primary">₹{lot.hourlyRate}/hr</span>
-                    </div>
-                    <h3 className="font-bold text-sm text-foreground truncate">{lot.parkingName}</h3>
-                    <p className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{formatAddress(lot.address)}, {lot.city}</p>
-
-                    <div className="grid grid-cols-3 gap-2 text-center my-3 py-2 bg-muted/30 rounded-lg">
-                      <div>
-                        <div className="text-xs font-bold text-foreground">{lot.totalSlots}</div>
-                        <div className="text-[10px] text-muted-foreground">Total Bays</div>
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-emerald-600">{lot.availableSlots}</div>
-                        <div className="text-[10px] text-muted-foreground">Available</div>
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-foreground">{lot.occupancyPercentage ?? 0}%</div>
-                        <div className="text-[10px] text-muted-foreground">Occupancy</div>
-                      </div>
                     </div>
                   </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-                  <div className="flex items-center gap-2 pt-2 border-t border-border/60">
-                    <Button asChild variant="outline" size="sm" className="flex-1 text-xs h-8">
-                      <Link to={`/owner/parking-lots/${lot._id}`}>
-                        <Building2 className="h-3 w-3 mr-1" /> Details
-                      </Link>
-                    </Button>
-                    <Button asChild variant="outline" size="sm" className="text-xs h-8">
-                      <Link to={`/owner/parking-lots/${lot._id}/layout`}>
-                        <Eye className="h-3 w-3 mr-1" /> Layout
-                      </Link>
-                    </Button>
-                  </div>
-                </div>
-              ))}
+        {/* Right: Customer Satisfaction & Reviews (5 cols) */}
+        <Card className="lg:col-span-5 rounded-xl border border-border/80 bg-card p-5 shadow-2xs flex flex-col justify-between">
+          <CardHeader className="p-0 pb-4 flex flex-row items-center justify-between border-b border-border/60">
+            <div>
+              <CardTitle className="text-base font-extrabold text-foreground flex items-center gap-2">
+                <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
+                Customer Satisfaction
+              </CardTitle>
+              <CardDescription className="text-xs text-muted-foreground mt-0.5">
+                Reputation score from verified driver visits.
+              </CardDescription>
             </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* 6. FACILITY SETUP SUBMISSIONS TRACKING (PRESERVED) */}
-      <Card className="shadow-xs border-border/80">
-        <CardHeader className="flex flex-row items-center justify-between pb-3 border-b border-border/60">
-          <div>
-            <CardTitle className="text-base font-bold text-foreground">Facility Setup Submissions</CardTitle>
-            <CardDescription className="text-xs text-muted-foreground">
-              Review requests and formal facility specifications submitted for platform verification
-            </CardDescription>
-          </div>
-          <Button asChild size="sm" variant="outline" className="text-xs gap-1">
-            <Link to="/owner/parking/submissions/new">
-              <PlusCircle className="h-3.5 w-3.5" /> Submit Request
+            <Link to="/owner/reviews">
+              <span className="text-xs font-bold text-primary hover:underline">All Reviews &rarr;</span>
             </Link>
-          </Button>
-        </CardHeader>
-        <CardContent className="p-0">
-          {submissions.length === 0 ? (
-            <div className="text-center py-10 text-xs text-muted-foreground">
-              No facility setup requests submitted yet.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-muted/40 text-muted-foreground border-b border-border/60">
-                  <tr>
-                    <th className="py-3 px-4 font-semibold">Facility Name</th>
-                    <th className="py-3 px-4 font-semibold">City / State</th>
-                    <th className="py-3 px-4 font-semibold">Capacity</th>
-                    <th className="py-3 px-4 font-semibold">Submission Date</th>
-                    <th className="py-3 px-4 font-semibold">Status</th>
-                    <th className="py-3 px-4 font-semibold text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {submissions.map((s) => (
-                    <tr key={s._id} className="hover:bg-muted/20 transition-colors">
-                      <td className="py-3 px-4 font-medium text-foreground">
-                        {s.facilityName || 'Untitled Facility'}
-                      </td>
-                      <td className="py-3 px-4 text-muted-foreground">
-                        {s.location?.city || '—'}, {s.location?.state || '—'}
-                      </td>
-                      <td className="py-3 px-4">
-                        {s.capacity?.totalSlots || 0} slots ({s.floors?.length || 1} {s.floors?.length === 1 ? 'floor' : 'floors'})
-                      </td>
-                      <td className="py-3 px-4 text-muted-foreground">
-                        {s.submittedAt ? format(new Date(s.submittedAt), 'dd MMM yyyy') : 'Draft'}
-                      </td>
-                      <td className="py-3 px-4">
-                        {getSubmissionStatusBadge(s.submissionStatus)}
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          {s.submissionStatus === 'Draft' ? (
-                            <>
-                              <Button asChild variant="outline" size="sm" className="h-7 px-2 text-xs">
-                                <Link to={`/owner/parking/submissions/${s._id}/edit`}>
-                                  <Edit3 className="h-3 w-3 mr-1" /> Edit
-                                </Link>
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setDraftToDelete(s)}
-                                className="h-7 px-2 text-xs text-destructive hover:bg-destructive/10"
-                              >
-                                <Trash2 className="h-3 w-3" />
-                              </Button>
-                            </>
-                          ) : (
-                            <Button asChild variant="outline" size="sm" className="h-7 px-2.5 text-xs">
-                              <Link to={`/owner/parking/submissions/${s._id}`}>
-                                <Eye className="h-3 w-3 mr-1" /> View Status
-                              </Link>
-                            </Button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          </CardHeader>
 
-      {/* DELETE DRAFT CONFIRMATION DIALOG */}
-      <Dialog open={!!draftToDelete} onOpenChange={(open) => !open && setDraftToDelete(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Draft Submission?</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete the draft for &quot;{draftToDelete?.facilityName || 'Draft'}&quot;? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => setDraftToDelete(null)} disabled={isDeletingDraft}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={confirmDeleteDraft} disabled={isDeletingDraft}>
-              {isDeletingDraft ? 'Deleting...' : 'Delete Draft'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <CardContent className="p-0 pt-3 space-y-4">
+            {/* Score & Awaiting Reply Badge */}
+            <div className="p-3.5 rounded-xl bg-muted/40 border border-border/60 flex items-center justify-between">
+              <div>
+                <span className="text-xs font-extrabold text-muted-foreground block uppercase">
+                  Rating Score
+                </span>
+                <div className="flex items-baseline gap-2 mt-0.5">
+                  <span className="text-3xl font-black text-foreground">
+                    {kpis?.averageRating?.toFixed(1) || '0.0'}
+                  </span>
+                  <span className="text-muted-foreground text-xs font-bold">/ 5.0</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground font-semibold">
+                  From {kpis?.totalReviews || 0} reviews
+                </span>
+              </div>
+
+              {kpis?.awaitingReplyCount && kpis.awaitingReplyCount > 0 ? (
+                <Link to="/owner/reviews">
+                  <Badge className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold text-xs px-2.5 py-1 shadow-2xs flex items-center gap-1.5 animate-pulse">
+                    <Clock className="w-3.5 h-3.5" />
+                    {kpis.awaitingReplyCount} Awaiting Reply
+                  </Badge>
+                </Link>
+              ) : (
+                <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 text-xs font-bold flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  All Replied
+                </Badge>
+              )}
+            </div>
+
+            {/* Recent Reviews Snippets */}
+            <div className="space-y-2.5">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-muted-foreground block">
+                Latest Customer Feedback
+              </span>
+              {recentReviews.length === 0 ? (
+                <p className="text-xs text-muted-foreground font-medium py-3 text-center">
+                  No reviews submitted yet.
+                </p>
+              ) : (
+                recentReviews.map((r) => (
+                  <div key={r._id} className="p-3 rounded-xl border border-border/70 bg-card text-xs space-y-1 shadow-2xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-extrabold text-foreground">{r.customerName}</span>
+                      <div className="flex items-center gap-1 text-amber-500 font-bold text-xs">
+                        <Star className="w-3 h-3 fill-amber-500" />
+                        <span>{r.overallRating}.0</span>
+                      </div>
+                    </div>
+                    <p className="text-foreground/80 italic font-medium truncate">&ldquo;{r.comment}&rdquo;</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* --------------------------------------------------------------------- */}
+      {/* 6. BUSINESS QUICK ACTIONS BAR */}
+      {/* --------------------------------------------------------------------- */}
+      <div>
+        <h3 className="text-xs font-extrabold uppercase tracking-wider text-muted-foreground mb-3">
+          Business Quick Actions
+        </h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+          {[
+            { label: 'Revenue & Payouts', href: '/owner/revenue', icon: DollarSign, color: 'text-emerald-600' },
+            { label: 'Vehicle Management', href: '/owner/vehicles', icon: Car, color: 'text-blue-600' },
+            { label: 'Live Vehicle Locator', href: '/owner/live-vehicles', icon: Navigation, color: 'text-primary' },
+            { label: 'Customer Reviews', href: '/owner/reviews', icon: MessageSquareQuote, color: 'text-amber-600' },
+            { label: 'Facility Management', href: '/owner/parking-lots', icon: Building2, color: 'text-indigo-600' },
+            { label: 'Staff Management', href: '/owner/staff', icon: Users, color: 'text-sky-600' },
+            { label: 'Business Settings', href: '/owner/settings', icon: Settings, color: 'text-primary' },
+          ].map((action) => {
+            const Icon = action.icon;
+            return (
+              <Link key={action.href} to={action.href} className="block group">
+                <Card className="rounded-xl border border-border/80 bg-card p-3.5 text-center shadow-2xs hover:border-primary/50 transition-all h-full flex flex-col items-center justify-center gap-2">
+                  <div className={cn('p-2 rounded-xl bg-muted/60 group-hover:bg-primary/10 transition-colors', action.color)}>
+                    <Icon className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                  </div>
+                  <span className="font-bold text-xs text-foreground group-hover:text-primary transition-colors leading-tight">
+                    {action.label}
+                  </span>
+                </Card>
+              </Link>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 };
+
+export default OwnerDashboardPage;

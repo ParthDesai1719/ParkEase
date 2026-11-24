@@ -17,6 +17,7 @@ import {
   replicateLaneNetworkHandler,
   updateCanvasBoundaryHandler,
   activateFacilityHandler,
+  updateOverflowConfigHandler,
 } from '../controllers/parkingLayout.controller.js';
 import { requireAuth, requirePermission, requireRole } from '../middleware/auth.js';
 
@@ -130,6 +131,14 @@ router.patch(
   requireRole('ADMIN'),
   requirePermission('PARKING_MANAGE'),
   updateCanvasBoundaryHandler,
+);
+
+router.patch(
+  '/:id/overflow-config',
+  requireAuth,
+  requireRole('ADMIN'),
+  requirePermission('PARKING_MANAGE'),
+  updateOverflowConfigHandler,
 );
 
 router.post(

@@ -25,6 +25,7 @@ import {
   type OfficialHierarchySlot,
   type FloorLayoutResponse,
 } from '@/api/parkingLot.api';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -118,31 +119,41 @@ export const OfficialParkingLotDetailPage: React.FC = () => {
     }
   };
 
-  const loadHierarchy = useCallback(async () => {
+  const loadHierarchy = useCallback(async (isSilent = false) => {
     if (!id) return;
     try {
-      setLoading(true);
-      setError(null);
+      if (!isSilent) {
+        setLoading(true);
+        setError(null);
+      }
       const res = await getOfficialParkingLotHierarchy(id);
       if (res.success && res.data) {
         setHierarchy(res.data);
-      } else {
+      } else if (!isSilent) {
         setError(res.message || 'Failed to retrieve parking lot hierarchy.');
       }
     } catch (err: unknown) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to connect to the server. Please check your network.',
-      );
+      if (!isSilent) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Unable to connect to the server. Please check your network.',
+        );
+      }
     } finally {
-      setLoading(false);
+      if (!isSilent) {
+        setLoading(false);
+      }
     }
   }, [id]);
 
   useEffect(() => {
     void loadHierarchy();
   }, [loadHierarchy]);
+
+  useLiveSync(() => {
+    void loadHierarchy(true);
+  });
 
   if (loading) {
     return (
@@ -308,17 +319,6 @@ export const OfficialParkingLotDetailPage: React.FC = () => {
               </Link>
             </Button>
           )}
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void loadHierarchy()}
-            disabled={loading}
-            className="gap-1.5"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
         </div>
       </div>
 
@@ -683,6 +683,18 @@ export const OfficialParkingLotDetailPage: React.FC = () => {
                   <Badge className="bg-emerald-600/10 text-emerald-600 border-emerald-600/30 text-[10px] font-semibold">
                     {selectedSlot.slot.slotStatus}
                   </Badge>
+                </div>
+                <div className="flex justify-between py-1 border-b border-border/40">
+                  <span className="text-muted-foreground">Bay Classification:</span>
+                  {selectedSlot.slot.isOverflow ? (
+                    <Badge className="bg-slate-800 text-slate-200 border-slate-600 font-mono text-[10px]">
+                      Overflow Bay (Universal)
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                      Regular Standard Bay
+                    </Badge>
+                  )}
                 </div>
                 <div className="space-y-1 pt-1">
                   <span className="text-muted-foreground block text-[11px]">Unique QR Identifier:</span>

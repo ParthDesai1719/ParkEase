@@ -22,6 +22,9 @@ import { CustomerDashboardPage } from '../pages/customer/CustomerDashboardPage';
 import { CustomerBookingsPage } from '../pages/customer/CustomerBookingsPage';
 import { CustomerBookingDetailPage } from '../pages/customer/CustomerBookingDetailPage';
 import { CustomerProfilePage } from '../pages/customer/CustomerProfilePage';
+import { CustomerReviewsPage } from '../pages/customer/CustomerReviewsPage';
+import { CustomerFavouritesPage } from '../pages/customer/CustomerFavouritesPage';
+import { CustomerHelplinePage } from '../pages/customer/CustomerHelplinePage';
 import { OwnerDashboardPage } from '../pages/owner/OwnerDashboardPage';
 import { OwnerProfilePage } from '../pages/owner/OwnerProfilePage';
 import { FacilitySubmissionPage } from '../pages/owner/FacilitySubmissionPage';
@@ -33,6 +36,13 @@ import { OwnerSlotsPage } from '../pages/owner/OwnerSlotsPage';
 import { OwnerBookingsPage } from '../pages/owner/OwnerBookingsPage';
 import { OwnerBookingDetailPage } from '../pages/owner/OwnerBookingDetailPage';
 import { OwnerStaffPage } from '../pages/owner/OwnerStaffPage';
+import { OwnerRevenuePage } from '../pages/owner/OwnerRevenuePage';
+import { OwnerVehiclesPage } from '../pages/owner/OwnerVehiclesPage';
+import { OwnerLiveLocatorPage } from '../pages/owner/OwnerLiveLocatorPage';
+import { OwnerReviewsPage } from '../pages/owner/OwnerReviewsPage';
+import { OwnerSettingsPage } from '../pages/owner/OwnerSettingsPage';
+import { OwnerIncidentsPage } from '../pages/owner/OwnerIncidentsPage';
+import { OwnerEmailCenterPage } from '../pages/owner/OwnerEmailCenterPage';
 import { SecurityDashboardPage } from '../pages/security/SecurityDashboardPage';
 import { SecurityProfilePage } from '../pages/security/SecurityProfilePage';
 import { SecurityScanPage } from '../pages/security/SecurityScanPage';
@@ -40,6 +50,8 @@ import { SecurityWalkInPage } from '../pages/security/SecurityWalkInPage';
 import { SecurityMovementLogsPage } from '../pages/security/SecurityMovementLogsPage';
 import { SecurityIncidentsPage } from '../pages/security/SecurityIncidentsPage';
 import { SecurityManualLookupPage } from '../pages/security/SecurityManualLookupPage';
+import { SecurityEmailerPage } from '../pages/security/SecurityEmailerPage';
+import { SecurityLiveViewerPage } from '../pages/security/SecurityLiveViewerPage';
 import { AdminDashboardPage } from '../pages/admin/AdminDashboardPage';
 import { AdminProfilePage } from '../pages/admin/AdminProfilePage';
 import { OwnerManagementPage } from '../pages/admin/OwnerManagementPage';
@@ -48,9 +60,19 @@ import { FacilitySubmissionReviewPage } from '../pages/admin/FacilitySubmissionR
 import { OfficialParkingLotsListPage } from '../pages/admin/OfficialParkingLotsListPage';
 import { OfficialParkingLotDetailPage } from '../pages/admin/OfficialParkingLotDetailPage';
 import { ParkingLayoutDesignerPage } from '../pages/admin/ParkingLayoutDesignerPage';
+import { PlatformSettingsPage } from '../pages/admin/PlatformSettingsPage';
+import { UserManagementPage } from '../pages/admin/UserManagementPage';
+import { SecurityStaffManagementPage } from '../pages/admin/SecurityStaffManagementPage';
+import { AdminOperationsPage } from '../pages/admin/AdminOperationsPage';
+import { AdminFinancePage } from '../pages/admin/AdminFinancePage';
+import { AdminEmailCenterPage } from '../pages/admin/AdminEmailCenterPage';
+import { AdminReviewsPage } from '../pages/admin/AdminReviewsPage';
+import { AdminReportsPage } from '../pages/admin/AdminReportsPage';
+import { AdminAnalyticsPage } from '../pages/admin/AdminAnalyticsPage';
 import { NotificationsPage } from '../pages/common/NotificationsPage';
 import { DashboardLayout } from '../layouts/DashboardLayout';
 import { SplashScreen } from '../components/common/SplashScreen';
+import { ParkingSimulatorPage } from '../pages/simulator/ParkingSimulatorPage';
 
 const AccessDeniedPage: React.FC = () => (
   <div className="flex min-h-screen flex-col items-center justify-center bg-background p-6 text-center">
@@ -136,6 +158,11 @@ export const router = createBrowserRouter([
     path: '/splash',
     element: <SplashScreen redirectTo="/" />,
   },
+  // Standalone Hardware Simulator (Active development hardware controller)
+  {
+    path: '/parking-simulator',
+    element: <ParkingSimulatorPage />,
+  },
   {
     path: '/access-denied',
     element: <AccessDeniedPage />,
@@ -184,6 +211,18 @@ export const router = createBrowserRouter([
           {
             path: 'booking/:id',
             element: <CustomerBookingDetailPage />,
+          },
+          {
+            path: 'reviews',
+            element: <CustomerReviewsPage />,
+          },
+          {
+            path: 'favourites',
+            element: <CustomerFavouritesPage />,
+          },
+          {
+            path: 'helpline',
+            element: <CustomerHelplinePage />,
           },
           {
             path: 'profile',
@@ -243,12 +282,40 @@ export const router = createBrowserRouter([
             element: <OwnerBookingDetailPage />,
           },
           {
+            path: 'revenue',
+            element: <OwnerRevenuePage />,
+          },
+          {
+            path: 'vehicles',
+            element: <OwnerVehiclesPage />,
+          },
+          {
+            path: 'live-vehicles',
+            element: <OwnerLiveLocatorPage />,
+          },
+          {
+            path: 'reviews',
+            element: <OwnerReviewsPage />,
+          },
+          {
+            path: 'incidents',
+            element: <OwnerIncidentsPage />,
+          },
+          {
+            path: 'email-center',
+            element: <OwnerEmailCenterPage />,
+          },
+          {
             path: 'staff',
             element: <OwnerStaffPage />,
           },
           {
             path: 'profile',
             element: <OwnerProfilePage />,
+          },
+          {
+            path: 'settings',
+            element: <OwnerSettingsPage />,
           },
           {
             path: 'parking/submissions/new',
@@ -312,6 +379,14 @@ export const router = createBrowserRouter([
             element: <SecurityManualLookupPage />,
           },
           {
+            path: 'live-viewer',
+            element: <SecurityLiveViewerPage />,
+          },
+          {
+            path: 'emailer',
+            element: <SecurityEmailerPage />,
+          },
+          {
             path: 'profile',
             element: <SecurityProfilePage />,
           },
@@ -345,8 +420,56 @@ export const router = createBrowserRouter([
             element: <AdminProfilePage />,
           },
           {
+            path: 'users',
+            element: <UserManagementPage />,
+          },
+          {
             path: 'owners',
             element: <OwnerManagementPage />,
+          },
+          {
+            path: 'staff',
+            element: <SecurityStaffManagementPage />,
+          },
+          {
+            path: 'operations',
+            element: <AdminOperationsPage />,
+          },
+          {
+            path: 'bookings',
+            element: <AdminOperationsPage />,
+          },
+          {
+            path: 'live-vehicles',
+            element: <AdminOperationsPage />,
+          },
+          {
+            path: 'finance',
+            element: <AdminFinancePage />,
+          },
+          {
+            path: 'payments',
+            element: <AdminFinancePage />,
+          },
+          {
+            path: 'email-center',
+            element: <AdminEmailCenterPage />,
+          },
+          {
+            path: 'communications',
+            element: <AdminEmailCenterPage />,
+          },
+          {
+            path: 'reviews',
+            element: <AdminReviewsPage />,
+          },
+          {
+            path: 'analytics',
+            element: <AdminAnalyticsPage />,
+          },
+          {
+            path: 'reports',
+            element: <AdminReportsPage />,
           },
           {
             path: 'facilities',
@@ -367,6 +490,10 @@ export const router = createBrowserRouter([
           {
             path: 'parking-lots/:id/layout',
             element: <ParkingLayoutDesignerPage />,
+          },
+          {
+            path: 'settings',
+            element: <PlatformSettingsPage />,
           },
           {
             path: 'notifications',

@@ -24,6 +24,7 @@ const eventTypeValues = [
   'Overstay Charge Created',
   'Overstay Payment Successful',
   'Overstay Cash Collected',
+  'Overstay Fee Payment',
   'Slot Reassigned Due to Overstay',
   'Booking Automatically Cancelled Due to Overstay Slot Conflict',
   'Full Refund Initiated',

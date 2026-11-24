@@ -91,6 +91,50 @@ const reviewSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    moderationReason: {
+      type: String,
+      default: null,
+      maxlength: 500,
+      trim: true,
+    },
+
+    moderationHistory: {
+      type: [
+        {
+          action: {
+            type: String,
+            required: true,
+            enum: ['Approve', 'Hide', 'Flag', 'Delete Attempt'],
+          },
+          moderatedBy: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User',
+            required: true,
+          },
+          moderatedAt: {
+            type: Date,
+            required: true,
+            default: Date.now,
+          },
+          reason: {
+            type: String,
+            default: null,
+            maxlength: 500,
+            trim: true,
+          },
+          previousStatus: {
+            type: String,
+            required: true,
+          },
+          newStatus: {
+            type: String,
+            required: true,
+          },
+        },
+      ],
+      default: [],
+    },
   },
   {
     collection: 'reviews',

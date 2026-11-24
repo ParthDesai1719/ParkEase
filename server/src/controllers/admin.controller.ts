@@ -25,10 +25,14 @@ export async function getOwnerApplications(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const { status, search, page, limit } = req.query;
+    const { status, search, page, limit, feeStatus, accountStatus, approvedFrom, approvedTo } = req.query;
     const filter: import('../services/admin.service.js').GetOwnerApplicationsFilter = {};
     if (typeof status === 'string') filter.status = status;
     if (typeof search === 'string') filter.search = search;
+    if (typeof feeStatus === 'string') filter.feeStatus = feeStatus;
+    if (typeof accountStatus === 'string') filter.accountStatus = accountStatus;
+    if (typeof approvedFrom === 'string') filter.approvedFrom = approvedFrom;
+    if (typeof approvedTo === 'string') filter.approvedTo = approvedTo;
     if (page) filter.page = Number(page);
     if (limit) filter.limit = Number(limit);
 
@@ -177,6 +181,104 @@ export async function getPublicOwnerRegistrationStatus(
   }
 }
 
+export async function getOwnerApplicationPayment(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { id } = req.params;
+    const payment = await adminService.getOwnerApplicationPayment(id as string);
+    sendSuccess(res, 'Owner application payment details retrieved successfully.', payment);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getOwnerFacilitiesSummary(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { id } = req.params;
+    const summary = await adminService.getOwnerFacilitiesSummary(id as string);
+    sendSuccess(res, 'Owner facilities summary retrieved successfully.', summary);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function suspendOwner(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+    const result = await adminService.suspendOwner(
+      id as string,
+      reason,
+      req.userId!,
+      req.roleId,
+      normalizeIp(req.ip),
+      req.headers['user-agent'],
+    );
+    sendSuccess(res, 'Owner account suspended successfully.', result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function activateOwner(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { id } = req.params;
+    const { remarks } = req.body || {};
+    const result = await adminService.activateOwner(
+      id as string,
+      remarks,
+      req.userId!,
+      req.roleId,
+      normalizeIp(req.ip),
+      req.headers['user-agent'],
+    );
+    sendSuccess(res, 'Owner account reactivated successfully.', result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function exportOwnerApplicationsCsv(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { status, search, feeStatus, accountStatus, approvedFrom, approvedTo } = req.query;
+    const filter: import('../services/admin.service.js').GetOwnerApplicationsFilter = {};
+    if (typeof status === 'string') filter.status = status;
+    if (typeof search === 'string') filter.search = search;
+    if (typeof feeStatus === 'string') filter.feeStatus = feeStatus;
+    if (typeof accountStatus === 'string') filter.accountStatus = accountStatus;
+    if (typeof approvedFrom === 'string') filter.approvedFrom = approvedFrom;
+    if (typeof approvedTo === 'string') filter.approvedTo = approvedTo;
+
+    const csvContent = await adminService.exportOwnerApplicationsCsv(filter);
+    const filename = `owner-directory-${new Date().toISOString().slice(0, 10)}.csv`;
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.status(200).send(csvContent);
+  } catch (error) {
+    next(error);
+  }
+}
+
 /**
  * =========================================================================
  * PARKING FACILITY SUBMISSION REVIEW CONTROLLER HANDLERS
@@ -189,10 +291,11 @@ export async function getFacilitySubmissions(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const { status, search, page, limit, sortBy, sortOrder } = req.query;
+    const { status, search, page, limit, sortBy, sortOrder, ownerId } = req.query;
     const filter: import('../services/facilitySubmission.service.js').GetAdminFacilitySubmissionsFilter = {};
     if (typeof status === 'string') filter.status = status;
     if (typeof search === 'string') filter.search = search;
+    if (typeof ownerId === 'string') filter.ownerId = ownerId;
     if (page) filter.page = Number(page);
     if (limit) filter.limit = Number(limit);
     if (typeof sortBy === 'string') filter.sortBy = sortBy;

@@ -18,7 +18,6 @@ import {
   Layers,
   Lock,
   LogIn,
-  LogOut,
   MapPin,
   QrCode,
   RefreshCw,
@@ -28,6 +27,7 @@ import {
   XCircle,
   Ban,
   Loader2,
+  Star,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -47,11 +47,13 @@ import {
   getCustomerBookingDetails,
   cancelCustomerBooking,
   checkInCustomerBooking,
-  checkOutCustomerBooking,
   type CustomerBookingItem,
 } from '@/api/customerParking.api';
 import { BookingQrPassDialog } from '@/components/customer/booking/BookingQrPassDialog';
 import { BookingConfirmationDialog } from '@/components/customer/booking/BookingConfirmationDialog';
+import { CustomerReviewModal } from '@/components/customer/CustomerReviewModal';
+import { CustomerExtendBookingModal } from '@/components/customer/CustomerExtendBookingModal';
+import { CustomerBayNavigationCard } from '@/components/customer/booking/CustomerBayNavigationCard';
 import { buildReceiptConfirmationFromBooking } from '@/lib/bookingReceiptHelper';
 import { useAuthStore } from '@/stores/authStore';
 import { cn } from '@/lib/utils';
@@ -89,6 +91,8 @@ export const CustomerBookingDetailPage: React.FC = () => {
   const [receiptDialogBooking, setReceiptDialogBooking] = useState<CustomerBookingItem | null>(null);
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
+  const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+  const [isExtendModalOpen, setIsExtendModalOpen] = useState(false);
 
   const detailQuery = useQuery({
     queryKey: ['customer-booking-detail', id],
@@ -135,18 +139,6 @@ export const CustomerBookingDetailPage: React.FC = () => {
     onError: (err: unknown) => {
       const error = err as { response?: { data?: { message?: string } } };
       toast.error(error?.response?.data?.message || 'Failed to record entry.');
-    },
-  });
-
-  const checkOutMutation = useMutation({
-    mutationFn: () => checkOutCustomerBooking(id || ''),
-    onSuccess: () => {
-      toast.success('Gate departure recorded. Session is now Completed.');
-      invalidateBookingQueries();
-    },
-    onError: (err: unknown) => {
-      const error = err as { response?: { data?: { message?: string } } };
-      toast.error(error?.response?.data?.message || 'Failed to record exit.');
     },
   });
 
@@ -429,20 +421,17 @@ export const CustomerBookingDetailPage: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={checkOutMutation.isPending}
-                  onClick={() => checkOutMutation.mutate()}
-                  className="h-8 text-xs gap-1.5 font-semibold border-destructive/40 text-destructive hover:bg-destructive/10"
-                >
-                  {checkOutMutation.isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <LogOut className="h-3.5 w-3.5" />
-                  )}
-                  Simulate Gate Exit (Complete)
-                </Button>
+                {booking.bookingStatus === 'Active' && (
+                  <Button
+                    size="sm"
+                    variant="default"
+                    onClick={() => setIsExtendModalOpen(true)}
+                    className="h-8 text-xs gap-1.5 font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs cursor-pointer"
+                  >
+                    <Clock className="h-3.5 w-3.5" />
+                    Extend Booking
+                  </Button>
+                )}
                 <Badge
                   variant={booking.bookingStatus === 'Overstay' ? 'destructive' : 'secondary'}
                   className="font-mono text-xs"
@@ -515,12 +504,22 @@ export const CustomerBookingDetailPage: React.FC = () => {
                   </p>
                 </div>
               </div>
-              <Badge
-                variant="outline"
-                className="border-sky-500/40 text-sky-600 dark:text-sky-400 bg-sky-500/10 text-xs font-mono font-bold"
-              >
-                COMPLETED
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => setIsReviewModalOpen(true)}
+                  className="text-xs h-8 gap-1.5 font-semibold bg-amber-500 hover:bg-amber-600 text-white shadow-xs"
+                >
+                  <Star className="w-3.5 h-3.5 fill-white" />
+                  <span>Rate & Review</span>
+                </Button>
+                <Badge
+                  variant="outline"
+                  className="border-sky-500/40 text-sky-600 dark:text-sky-400 bg-sky-500/10 text-xs font-mono font-bold"
+                >
+                  COMPLETED
+                </Badge>
+              </div>
             </div>
           )}
 
@@ -678,6 +677,14 @@ export const CustomerBookingDetailPage: React.FC = () => {
             </CardContent>
           </Card>
 
+          {/* Interactive Turn-by-Turn Bay Navigation for Active / Reassigned Bookings */}
+          {(booking.bookingStatus === 'Active' ||
+            booking.bookingStatus === 'Overstay' ||
+            booking.bookingStatus === 'Confirmed' ||
+            booking.reassignment.slotReassignmentStatus === 'REASSIGNED') && (
+            <CustomerBayNavigationCard booking={booking} />
+          )}
+
           {/* Chronological Booking Timeline */}
           <Card className="border-border/70 shadow-xs">
             <CardHeader className="border-b border-border/50 pb-4">
@@ -753,6 +760,14 @@ export const CustomerBookingDetailPage: React.FC = () => {
                     ₹{booking.baseAmount.toFixed(2)}
                   </span>
                 </div>
+                {typeof booking.platformBookingFee === 'number' && booking.platformBookingFee > 0 && (
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Platform Booking Fee</span>
+                    <span className="font-mono font-semibold text-primary">
+                      ₹{booking.platformBookingFee.toFixed(2)}
+                    </span>
+                  </div>
+                )}
                 {booking.additionalCharges > 0 && (
                   <div className="flex items-center justify-between text-muted-foreground">
                     <span>Additional Charges</span>
@@ -954,6 +969,43 @@ export const CustomerBookingDetailPage: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Review Modal for Completed Booking */}
+      {booking && (
+        <CustomerReviewModal
+          open={isReviewModalOpen}
+          onOpenChange={setIsReviewModalOpen}
+          booking={{
+            bookingId: booking.bookingId,
+            bookingReference: booking.bookingReference,
+            parkingName: booking.parkingName,
+            parkingAddress: booking.parkingAddress,
+          }}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['customer-booking-detail', id] });
+          }}
+        />
+      )}
+
+      {/* Customer Extend Booking Modal */}
+      {booking && (
+        <CustomerExtendBookingModal
+          isOpen={isExtendModalOpen}
+          onClose={() => setIsExtendModalOpen(false)}
+          booking={{
+            id: booking.bookingId,
+            bookingReference: booking.bookingReference,
+            scheduledExitTime: booking.scheduledExitTime,
+            parkingLotName: booking.parkingName,
+            parkingRateAtBooking: booking.parkingRateAtBooking,
+            vehicleNumber: booking.vehicle.vehicleNumber,
+            slotNumber: booking.currentSlot.slotNumber,
+          }}
+          onSuccess={() => {
+            invalidateBookingQueries();
+          }}
+        />
+      )}
     </div>
   );
 };

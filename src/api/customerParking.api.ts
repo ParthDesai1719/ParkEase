@@ -309,6 +309,9 @@ export interface CustomerBookingSlotInfo {
   isVehicleCompatible: boolean;
   isEligible: boolean;
   ineligibilityReason: string | null;
+  expectedAvailableAt?: string | null;
+  expectedAvailableMinutes?: number | null;
+  isOverflow?: boolean;
 }
 
 export interface PriceBreakdownResult {
@@ -322,6 +325,7 @@ export interface PriceBreakdownResult {
   gracePeriodMinutes: number;
   baseAmount: number;
   additionalCharges: number;
+  platformBookingFee?: number;
   totalAmount: number;
   appliedPricingTier: string;
 }
@@ -416,6 +420,10 @@ export interface CustomerVehicleRecord {
   fuelType?: string;
   isDefault: boolean;
   vehicleStatus: string;
+  hasActiveBooking?: boolean;
+  activeBookingId?: string | null;
+  activeBookingReference?: string | null;
+  activeBookingStatus?: string | null;
 }
 
 export interface InitiateBookingPaymentResponse {
@@ -742,6 +750,7 @@ export interface CustomerBookingItem {
   overstayRateAtBooking: number;
   baseAmount: number;
   additionalCharges: number;
+  platformBookingFee?: number;
   totalAmount: number;
   canViewQr: boolean;
   qrCode: string | null;
@@ -1020,5 +1029,282 @@ export async function checkOutCustomerBooking(
     data: { bookingId: string; bookingStatus: string };
   }>(`/customer/parking/bookings/${encodeURIComponent(bookingId)}/check-out`);
 
+  return response.data.data;
+}
+
+/**
+ * Remove facility from favourites explicitly
+ */
+export async function removeFacilityFavourite(
+  parkingLotId: string,
+): Promise<boolean> {
+  const response = await apiClient.delete<{ success: boolean; data: { isFavourite: boolean } }>(
+    `/customer/parking/${parkingLotId}/favourite`,
+  );
+  return Boolean(response.data.data.isFavourite);
+}
+
+export interface CustomerSubmittedReviewItem {
+  _id: string;
+  bookingId: string;
+  bookingReference: string;
+  parkingLotId: string;
+  parkingName: string;
+  parkingAddress: string;
+  parkingCity: string;
+  parkingImage?: string | null;
+  overallRating: number;
+  comment: string | null;
+  ownerReply: string | null;
+  replyDate: string | null;
+  replyEdited: boolean;
+  isEdited: boolean;
+  moderationStatus: 'Published' | 'Under Review' | 'Hidden';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EligibleReviewBookingItem {
+  bookingId: string;
+  bookingReference: string;
+  parkingLotId: string;
+  parkingName: string;
+  parkingAddress: string;
+  parkingCity: string;
+  parkingImage?: string | null;
+  startTime: string;
+  endTime: string;
+  actualExitTime?: string | null;
+  totalAmount: number;
+  slotNumber: string;
+  vehiclePlate: string;
+}
+
+/**
+ * Retrieves past reviews submitted by the authenticated customer
+ */
+export async function getCustomerReviews(): Promise<CustomerSubmittedReviewItem[]> {
+  const response = await apiClient.get<{
+    success: boolean;
+    data: CustomerSubmittedReviewItem[];
+  }>('/customer/parking/reviews');
+  return response.data.data;
+}
+
+/**
+ * Retrieves completed bookings eligible for review submission
+ */
+export async function getEligibleBookingsForReview(): Promise<EligibleReviewBookingItem[]> {
+  const response = await apiClient.get<{
+    success: boolean;
+    data: EligibleReviewBookingItem[];
+  }>('/customer/parking/reviews/eligible-bookings');
+  return response.data.data;
+}
+
+/**
+ * Submits a new review for an eligible completed booking
+ */
+export async function submitCustomerReview(payload: {
+  bookingId: string;
+  overallRating: number;
+  comment?: string;
+}): Promise<CustomerSubmittedReviewItem> {
+  const response = await apiClient.post<{
+    success: boolean;
+    message: string;
+    data: CustomerSubmittedReviewItem;
+  }>('/customer/parking/reviews', payload);
+  return response.data.data;
+}
+
+/**
+ * Updates an existing review submitted by the customer
+ */
+export async function updateCustomerReview(
+  reviewId: string,
+  payload: {
+    overallRating?: number;
+    comment?: string;
+  },
+): Promise<CustomerSubmittedReviewItem> {
+  const response = await apiClient.put<{
+    success: boolean;
+    message: string;
+    data: CustomerSubmittedReviewItem;
+  }>(`/customer/parking/reviews/${encodeURIComponent(reviewId)}`, payload);
+  return response.data.data;
+}
+
+/**
+ * Deletes a review submitted by the customer
+ */
+export async function deleteCustomerReview(
+  reviewId: string,
+): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.delete<{
+    success: boolean;
+    message: string;
+  }>(`/customer/parking/reviews/${encodeURIComponent(reviewId)}`);
+  return response.data;
+}
+
+export interface CustomerExtensionQuoteResponse {
+  eligible: boolean;
+  bookingId: string;
+  bookingReference: string;
+  currentScheduledExitTime: string;
+  proposedScheduledExitTime: string;
+  additionalMinutes: number;
+  additionalCharge: number;
+  ratePerHour: number;
+  exitGracePeriodMinutes: number;
+  paymentOptions: Array<'RAZORPAY' | 'CASH'>;
+  conflictWithNextBooking?: boolean;
+  reason?: string;
+}
+
+export interface InitiateCustomerExtensionPayload {
+  additionalMinutes: number;
+  paymentMethod: 'RAZORPAY' | 'CASH';
+}
+
+export interface InitiateCustomerExtensionResponse {
+  bookingId: string;
+  bookingReference: string;
+  extensionReference: string;
+  paymentMethod: 'RAZORPAY' | 'CASH';
+  paymentStatus: 'PENDING' | 'SUCCESSFUL';
+  status: 'PENDING_PAYMENT' | 'CONFIRMED';
+  previousScheduledExitTime: string;
+  newScheduledExitTime: string;
+  additionalMinutes: number;
+  additionalCharge: number;
+  message: string;
+  razorpayOrder?: {
+    orderId: string;
+    amount: number;
+    currency: string;
+    keyId: string;
+  };
+  paymentReference?: string;
+}
+
+export interface VerifyOnlineExtensionPayload {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}
+
+/**
+ * Calculates extension quote and validates eligibility for active customer booking
+ */
+export async function getCustomerExtensionQuote(
+  bookingId: string,
+  additionalMinutes: number,
+): Promise<CustomerExtensionQuoteResponse> {
+  const response = await apiClient.get<{
+    success: boolean;
+    message: string;
+    data: CustomerExtensionQuoteResponse;
+  }>(`/customer/parking/bookings/${encodeURIComponent(bookingId)}/extension-quote`, {
+    params: { additionalMinutes },
+  });
+  return response.data.data;
+}
+
+/**
+ * Initiates extension with either online Razorpay hold or deferred Cash at Exit
+ */
+export async function initiateCustomerExtension(
+  bookingId: string,
+  payload: InitiateCustomerExtensionPayload,
+): Promise<InitiateCustomerExtensionResponse> {
+  const response = await apiClient.post<{
+    success: boolean;
+    message: string;
+    data: InitiateCustomerExtensionResponse;
+  }>(`/customer/parking/bookings/${encodeURIComponent(bookingId)}/extension/initiate`, payload);
+  return response.data.data;
+}
+
+/**
+ * Verifies Razorpay HMAC signature and confirms online extension
+ */
+export async function verifyOnlineCustomerExtension(
+  bookingId: string,
+  payload: VerifyOnlineExtensionPayload,
+): Promise<any> {
+  const response = await apiClient.post<{
+    success: boolean;
+    message: string;
+    data: any;
+  }>(`/customer/parking/bookings/${encodeURIComponent(bookingId)}/extension/verify-online`, payload);
+  return response.data.data;
+}
+
+/**
+ * Cancels pending online extension hold
+ */
+export async function cancelOnlineCustomerExtension(
+  bookingId: string,
+): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.post<{
+    success: boolean;
+    message: string;
+    data: any;
+  }>(`/customer/parking/bookings/${encodeURIComponent(bookingId)}/extension/cancel-online`);
+  return response.data;
+}
+
+// ============================================================================
+// PHASE 3.5 — CUSTOMER 24/7 HELPLINE INQUIRIES API
+// ============================================================================
+
+export interface SubmitCustomerHelpInquiryPayload {
+  parkingLotId: string;
+  bookingReference?: string;
+  category: string;
+  priority: string;
+  message: string;
+}
+
+export interface CustomerHelpInquiryItem {
+  _id: string;
+  incidentReference: string;
+  parkingLotId: {
+    _id: string;
+    parkingName: string;
+    address: string;
+    city: string;
+    contactNumber?: string;
+    supportEmail?: string;
+  } | string;
+  bookingId?: string | null;
+  customerId?: string;
+  incidentType: string;
+  incidentStatus: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed' | 'Pending' | 'Resolving' | string;
+  severity: string;
+  title: string;
+  description: string;
+  location?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function submitCustomerHelpInquiry(
+  payload: SubmitCustomerHelpInquiryPayload,
+): Promise<CustomerHelpInquiryItem> {
+  const response = await apiClient.post<{ success: boolean; data: CustomerHelpInquiryItem }>(
+    '/customer/parking/helpline/inquiries',
+    payload,
+  );
+  return response.data.data;
+}
+
+export async function getCustomerHelpInquiries(): Promise<CustomerHelpInquiryItem[]> {
+  const response = await apiClient.get<{ success: boolean; data: CustomerHelpInquiryItem[] }>(
+    '/customer/parking/helpline/inquiries',
+  );
   return response.data.data;
 }

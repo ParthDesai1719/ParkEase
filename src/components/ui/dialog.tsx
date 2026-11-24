@@ -27,7 +27,7 @@ function DialogOverlay({
     <RadixDialog.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        'fixed inset-0 z-[200] bg-black/60 backdrop-blur-xs data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+        'fixed inset-0 z-[200] bg-black/60 backdrop-blur-md data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         className,
       )}
       {...props}

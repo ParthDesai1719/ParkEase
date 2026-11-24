@@ -8,7 +8,6 @@ import {
   Clock,
   Eye,
   LogOut,
-  RefreshCw,
   Search,
   ShieldAlert,
   User,
@@ -21,6 +20,7 @@ import {
   type FacilitySubmissionsStats,
 } from '@/api/admin.api';
 import { useAuthStore } from '@/stores/authStore';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -51,18 +51,22 @@ export const FacilitySubmissionsListPage: React.FC = () => {
   // Filter & Pagination States from URL
   const currentStatus = searchParams.get('status') || 'All';
   const currentSearch = searchParams.get('search') || '';
+  const currentOwnerId = searchParams.get('ownerId') || '';
   const currentPage = Number(searchParams.get('page')) || 1;
   const [searchInput, setSearchInput] = useState(currentSearch);
   const [totalPages, setTotalPages] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
 
-  const loadSubmissions = useCallback(async () => {
+  const loadSubmissions = useCallback(async (isSilent = false) => {
     try {
-      setLoading(true);
-      setError(null);
+      if (!isSilent) {
+        setLoading(true);
+        setError(null);
+      }
       const res = await getAdminFacilitySubmissions({
         status: currentStatus === 'All' ? undefined : currentStatus,
         search: currentSearch || undefined,
+        ownerId: currentOwnerId || undefined,
         page: currentPage,
         limit: 10,
         sortBy: 'createdAt',
@@ -76,58 +80,27 @@ export const FacilitySubmissionsListPage: React.FC = () => {
         if (res.data.stats) {
           setStats(res.data.stats);
         }
-      } else {
+      } else if (!isSilent) {
         setError(res.message || 'Failed to load facility submissions.');
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Error connecting to the server.');
+      if (!isSilent) {
+        setError(err instanceof Error ? err.message : 'Error connecting to the server.');
+      }
     } finally {
-      setLoading(false);
+      if (!isSilent) {
+        setLoading(false);
+      }
     }
-  }, [currentStatus, currentSearch, currentPage]);
+  }, [currentStatus, currentSearch, currentOwnerId, currentPage]);
 
   useEffect(() => {
-    let isSubscribed = true;
+    void loadSubmissions();
+  }, [loadSubmissions]);
 
-    const fetchInitial = async () => {
-      try {
-        const res = await getAdminFacilitySubmissions({
-          status: currentStatus === 'All' ? undefined : currentStatus,
-          search: currentSearch || undefined,
-          page: currentPage,
-          limit: 10,
-          sortBy: 'createdAt',
-          sortOrder: 'desc',
-        });
-
-        if (isSubscribed && res.success && res.data) {
-          setSubmissions(res.data.submissions);
-          setTotalPages(res.data.totalPages);
-          setTotalCount(res.data.total);
-          if (res.data.stats) {
-            setStats(res.data.stats);
-          }
-          setError(null);
-        } else if (isSubscribed) {
-          setError(res.message || 'Failed to load facility submissions.');
-        }
-      } catch (err: unknown) {
-        if (isSubscribed) {
-          setError(err instanceof Error ? err.message : 'Error connecting to the server.');
-        }
-      } finally {
-        if (isSubscribed) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void fetchInitial();
-
-    return () => {
-      isSubscribed = false;
-    };
-  }, [currentStatus, currentSearch, currentPage]);
+  useLiveSync(() => {
+    void loadSubmissions(true);
+  });
 
   const handleTabChange = (status: string) => {
     const params = new URLSearchParams(searchParams);
@@ -269,17 +242,6 @@ export const FacilitySubmissionsListPage: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void loadSubmissions()}
-            disabled={loading}
-            className="gap-1.5"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-
           <Button variant="outline" size="sm" asChild className="gap-1.5">
             <Link to="/admin/parking-lots">
               <Building2 className="h-4 w-4" />

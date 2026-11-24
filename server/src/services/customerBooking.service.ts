@@ -15,12 +15,15 @@ import { PaymentModel, type Payment } from '../models/Payment.js';
 import { NotificationModel, type Notification } from '../models/Notification.js';
 import { VehicleModel, type Vehicle } from '../models/Vehicle.js';
 import { UserModel, type User } from '../models/User.js';
+import { VehicleMovementLogModel } from '../models/VehicleMovementLog.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/AppError.js';
 import { razorpayService } from './razorpay.service.js';
 import { notificationService } from './notification.service.js';
 import { auditService } from './audit.service.js';
 import { emailService } from './email.service.js';
+import { adminSettingsService } from './adminSettings.service.js';
+import { emitSlotStatusUpdate, emitBookingStatusUpdate, emitNewNotification } from '../socket.js';
 import {
   customerParkingService,
   type CustomerParkingLotResult,
@@ -50,7 +53,10 @@ export interface CustomerBookingSlotInfo {
   effectiveStatus: EffectiveSlotStatus;
   isVehicleCompatible: boolean;
   isEligible: boolean;
+  isOverflow?: boolean;
   ineligibilityReason: string | null;
+  expectedAvailableAt?: string | null;
+  expectedAvailableMinutes?: number | null;
 }
 
 export interface PriceBreakdownResult {
@@ -63,6 +69,7 @@ export interface PriceBreakdownResult {
   overstayRateAtBooking: number;
   gracePeriodMinutes: number;
   baseAmount: number;
+  platformBookingFee: number;
   additionalCharges: number;
   totalAmount: number;
   appliedPricingTier: string;
@@ -235,6 +242,7 @@ export interface VerifyBookingPaymentResponse {
     bookingDurationMinutes: number;
     parkingRateAtBooking?: number;
     baseAmount: number;
+    platformBookingFee?: number;
     taxes: number;
     discountAmount: number;
     additionalCharges: number;
@@ -312,6 +320,7 @@ export interface CustomerBookingItem {
   parkingRateAtBooking: number;
   overstayRateAtBooking: number;
   baseAmount: number;
+  platformBookingFee: number;
   additionalCharges: number;
   totalAmount: number;
   canViewQr: boolean;
@@ -341,11 +350,11 @@ export interface CustomerBookingItem {
   };
   reassignment: {
     slotReassignmentStatus:
-      | 'NOT_REQUIRED'
-      | 'PENDING'
-      | 'REASSIGNED'
-      | 'FAILED'
-      | 'CANCELLED_REFUNDED';
+    | 'NOT_REQUIRED'
+    | 'PENDING'
+    | 'REASSIGNED'
+    | 'FAILED'
+    | 'CANCELLED_REFUNDED';
     slotReassignmentReason: string | null;
     slotReassignedAt: string | null;
     originalSlotNumber: string | null;
@@ -487,6 +496,16 @@ export class CustomerBookingService {
    */
   private async resolveFacilityPricing(lot: ParkingLot) {
     const baseCarRate = lot.hourlyRate;
+    let globalGracePeriod: number | undefined;
+    try {
+      const sysSettings = await adminSettingsService.getSettings();
+      if (typeof sysSettings?.bookingGracePeriodMinutes === 'number') {
+        globalGracePeriod = sysSettings.bookingGracePeriodMinutes;
+      }
+    } catch {
+      // Fallback to facility defaults
+    }
+
     let pricing = {
       carHourlyRate: baseCarRate,
       suvHourlyRate: baseCarRate,
@@ -494,7 +513,7 @@ export class CustomerBookingService {
       dailyRate: baseCarRate * 8,
       overnightRate: baseCarRate * 10,
       evChargingRatePerHour: baseCarRate,
-      gracePeriodMinutes: lot.gracePeriodMinutes ?? 15,
+      gracePeriodMinutes: globalGracePeriod ?? lot.gracePeriodMinutes ?? 15,
       minParkingDurationHours: 1,
       maxParkingDurationHours: 24,
     };
@@ -538,7 +557,8 @@ export class CustomerBookingService {
             dailyRate: sub.pricing.dailyRate || resolvedCarRate * 8,
             overnightRate: sub.pricing.overnightRate || resolvedCarRate * 10,
             evChargingRatePerHour: effectiveEvRate,
-            gracePeriodMinutes: sub.pricing.gracePeriodMinutes ?? lot.gracePeriodMinutes ?? 15,
+            gracePeriodMinutes:
+              globalGracePeriod ?? sub.pricing.gracePeriodMinutes ?? lot.gracePeriodMinutes ?? 15,
             minParkingDurationHours: sub.pricing.minParkingDurationHours || 1,
             maxParkingDurationHours: sub.pricing.maxParkingDurationHours || 24,
           };
@@ -688,6 +708,7 @@ export class CustomerBookingService {
       openingTime: string;
       closingTime: string;
     };
+    platformBookingFee?: number;
     allowNearPresentBuffer?: boolean;
   }): {
     entryDate: Date;
@@ -774,9 +795,10 @@ export class CustomerBookingService {
         break;
     }
 
+    const platformBookingFee = Math.max(0, Number(params.platformBookingFee) || 0);
     const baseAmount = Math.round(billableHours * hourlyRate);
     const additionalCharges = 0;
-    const totalAmount = baseAmount;
+    const totalAmount = baseAmount + additionalCharges + platformBookingFee;
 
     return {
       entryDate,
@@ -791,6 +813,7 @@ export class CustomerBookingService {
         overstayRateAtBooking: hourlyRate,
         gracePeriodMinutes: params.pricing.gracePeriodMinutes,
         baseAmount,
+        platformBookingFee,
         additionalCharges,
         totalAmount,
         appliedPricingTier,
@@ -1037,12 +1060,17 @@ export class CustomerBookingService {
   }
 
   /**
-   * Evaluates whether a physical slot is compatible with the customer's selected vehicle type
+   * Evaluates whether a physical slot is compatible with the customer's selected vehicle type.
+   * Overflow slots provide universal vehicle compatibility (accept Bike, Car, SUV, EV).
    */
   private isSlotCompatibleWithVehicle(
     slotSupportedType: string,
     requestedVehicleType: SupportedVehicleType,
+    isOverflow?: boolean,
   ): boolean {
+    if (isOverflow) {
+      return true;
+    }
     return slotSupportedType === requestedVehicleType;
   }
 
@@ -1183,12 +1211,14 @@ export class CustomerBookingService {
     const rawEntry = params.scheduledEntryTime || defaultStart.toISOString();
     const rawExit = params.scheduledExitTime || defaultEnd.toISOString();
 
+    const platformBookingFee = await adminSettingsService.getPlatformBookingFee();
     const { entryDate, exitDate, breakdown } = this.calculatePriceAndValidatePeriod({
       vehicleType: requestedVehicleType,
       scheduledEntryTime: rawEntry,
       scheduledExitTime: rawExit,
       pricing,
       operating,
+      platformBookingFee,
       allowNearPresentBuffer: true,
     });
 
@@ -1228,12 +1258,32 @@ export class CustomerBookingService {
       .exec();
 
     const slotObjectIds = floorSlots.map((s) => s._id as mongoose.Types.ObjectId);
-    const conflictMap = await this.findConflictingSlotMap({
-      parkingLotId: lotObjectId,
-      slotIds: slotObjectIds,
-      entryDate,
-      exitDate,
-    });
+    const [conflictMap, activeFloorBookings] = await Promise.all([
+      this.findConflictingSlotMap({
+        parkingLotId: lotObjectId,
+        slotIds: slotObjectIds,
+        entryDate,
+        exitDate,
+      }),
+      (BookingModel as mongoose.Model<Booking>)
+        .find({
+          parkingLotId: lotObjectId,
+          currentSlotId: { $in: slotObjectIds },
+          bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+        })
+        .select('currentSlotId scheduledExitTime actualEntryTime bookingStatus')
+        .sort({ scheduledExitTime: -1 })
+        .lean()
+        .exec(),
+    ]);
+
+    const slotBookingMap = new Map<string, { scheduledExitTime: Date; bookingStatus: string }>();
+    for (const b of activeFloorBookings) {
+      const sId = b.currentSlotId.toString();
+      if (!slotBookingMap.has(sId) || b.bookingStatus === 'Active' || b.bookingStatus === 'Overstay') {
+        slotBookingMap.set(sId, { scheduledExitTime: b.scheduledExitTime, bookingStatus: b.bookingStatus });
+      }
+    }
 
     // Evaluate overlaps with present moment to know if physical Occupied/Reserved status applies
     const isNearPresentWindow = entryDate.getTime() <= Date.now() + 30 * 60 * 1000;
@@ -1244,10 +1294,30 @@ export class CustomerBookingService {
     let maintenanceCount = 0;
     let compatibleAvailableCount = 0;
 
+    // Count regular compatible available slots across the floor to evaluate Rule 1 (regular first) vs Rule 2 (overflow fallback)
+    const regularCompatibleAvailableCountOnFloor = floorSlots.filter((slot) => {
+      const isSlotOverflow = Boolean(slot.isOverflow);
+      if (isSlotOverflow) return false;
+      const slotIdStr = slot._id.toString();
+      const zone = zoneMap.get(slot.zoneId.toString());
+      const zoneClosed = zone && zone.zoneStatus !== 'Active';
+      if (slot.slotStatus === 'Under Maintenance' || zoneClosed) return false;
+      if (conflictMap.has(slotIdStr)) return false;
+      if (
+        isNearPresentWindow &&
+        (slot.slotStatus === 'Occupied' ||
+          (slot.slotStatus === 'Reserved' && !slot.currentBookingId))
+      ) {
+        return false;
+      }
+      return slot.supportedVehicleType === requestedVehicleType;
+    }).length;
+
     const evaluatedSlots: CustomerBookingSlotInfo[] = floorSlots.map((slot) => {
       const slotIdStr = slot._id.toString();
       const zone = zoneMap.get(slot.zoneId.toString());
       const zoneClosed = zone && zone.zoneStatus !== 'Active';
+      const isSlotOverflow = Boolean(slot.isOverflow);
 
       let effectiveStatus: EffectiveSlotStatus = 'Available';
       let ineligibilityReason: string | null = null;
@@ -1272,16 +1342,43 @@ export class CustomerBookingService {
         ineligibilityReason = 'Reserved for an upcoming arrival.';
       }
 
+      // Calculate expected availability countdown for occupied and reserved bays
+      let expectedAvailableAt: string | null = null;
+      let expectedAvailableMinutes: number | null = null;
+      const slotBooking = slotBookingMap.get(slotIdStr);
+
+      if (
+        (effectiveStatus === 'Occupied' || effectiveStatus === 'Reserved') &&
+        slotBooking?.scheduledExitTime
+      ) {
+        // Expected availability = scheduledExitTime + 15m grace period
+        const targetExit = new Date(
+          new Date(slotBooking.scheduledExitTime).getTime() + 15 * 60 * 1000,
+        );
+        expectedAvailableAt = targetExit.toISOString();
+        const diffMs = targetExit.getTime() - Date.now();
+        expectedAvailableMinutes = Math.max(1, Math.ceil(diffMs / (60 * 1000)));
+      }
+
       const isVehicleCompatible = this.isSlotCompatibleWithVehicle(
         slot.supportedVehicleType,
         requestedVehicleType,
+        isSlotOverflow,
       );
 
-      if (effectiveStatus === 'Available' && !isVehicleCompatible) {
-        ineligibilityReason = `Designed for ${slot.supportedVehicleType} vehicles (selected: ${requestedVehicleType}).`;
+      if (effectiveStatus === 'Available') {
+        if (isSlotOverflow) {
+          ineligibilityReason =
+            'Overflow bays are frozen for customer bookings. Strictly reserved for system overstay reassignments and authorized security staff.';
+        } else if (!isVehicleCompatible) {
+          ineligibilityReason = `Designed for ${slot.supportedVehicleType} vehicles (selected: ${requestedVehicleType}).`;
+        }
       }
 
-      const isEligible = effectiveStatus === 'Available' && isVehicleCompatible;
+      const isEligible =
+        effectiveStatus === 'Available' &&
+        isVehicleCompatible &&
+        !isSlotOverflow;
 
       if (effectiveStatus === 'Available') {
         availableCount++;
@@ -1310,7 +1407,10 @@ export class CustomerBookingService {
         effectiveStatus,
         isVehicleCompatible,
         isEligible,
+        isOverflow: isSlotOverflow,
         ineligibilityReason,
+        expectedAvailableAt,
+        expectedAvailableMinutes,
       };
     });
 
@@ -1344,7 +1444,10 @@ export class CustomerBookingService {
             effectiveStatus: matchedSlot.effectiveStatus,
             isVehicleCompatible: matchedSlot.isVehicleCompatible,
             isEligible: matchedSlot.isEligible,
+            isOverflow: Boolean(matchedSlot.isOverflow || plainEl.isOverflow),
             ineligibilityReason: matchedSlot.ineligibilityReason,
+            expectedAvailableAt: matchedSlot.expectedAvailableAt,
+            expectedAvailableMinutes: matchedSlot.expectedAvailableMinutes,
           };
         }
       }
@@ -1418,7 +1521,7 @@ export class CustomerBookingService {
   }
 
   /**
-   * Retrieves customer's active registered vehicles
+   * Retrieves customer's active registered vehicles, enriched with active booking status
    */
   public async getCustomerVehicles(userId: string) {
     if (!mongoose.Types.ObjectId.isValid(userId)) {
@@ -1434,7 +1537,39 @@ export class CustomerBookingService {
       .lean()
       .exec();
 
-    return vehicles;
+    if (vehicles.length === 0) {
+      return [];
+    }
+
+    const vehicleIds = vehicles.map((v) => v._id);
+    const activeBookings = await (BookingModel as mongoose.Model<Booking>)
+      .find({
+        vehicleId: { $in: vehicleIds },
+        bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+      })
+      .select('bookingReference vehicleId bookingStatus scheduledEntryTime scheduledExitTime')
+      .lean()
+      .exec();
+
+    const activeMap = new Map<string, { bookingId: string; bookingReference: string; bookingStatus: string }>();
+    for (const b of activeBookings) {
+      activeMap.set(b.vehicleId.toString(), {
+        bookingId: b._id.toString(),
+        bookingReference: b.bookingReference,
+        bookingStatus: b.bookingStatus,
+      });
+    }
+
+    return vehicles.map((v) => {
+      const active = activeMap.get(v._id.toString());
+      return {
+        ...v,
+        hasActiveBooking: Boolean(active),
+        activeBookingId: active?.bookingId ?? null,
+        activeBookingReference: active?.bookingReference ?? null,
+        activeBookingStatus: active?.bookingStatus ?? null,
+      };
+    });
   }
 
   /**
@@ -1471,7 +1606,21 @@ export class CustomerBookingService {
 
     if (existing) {
       if (existing.customerId.toString() === userId) {
-        return existing;
+        const activeBooking = await (BookingModel as mongoose.Model<Booking>)
+          .findOne({
+            vehicleId: existing._id,
+            bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+          })
+          .select('bookingReference bookingStatus')
+          .lean()
+          .exec();
+
+        return {
+          ...existing,
+          hasActiveBooking: Boolean(activeBooking),
+          activeBookingReference: activeBooking?.bookingReference ?? null,
+          activeBookingStatus: activeBooking?.bookingStatus ?? null,
+        };
       }
       throw new AppError(
         'A vehicle with this registration number is already registered.',
@@ -1480,10 +1629,11 @@ export class CustomerBookingService {
       );
     }
 
-    const count = await (VehicleModel as mongoose.Model<Vehicle>).countDocuments({
-      customerId: new mongoose.Types.ObjectId(userId),
-      vehicleStatus: 'Active',
-    });
+    const count = await (VehicleModel as mongoose.Model<Vehicle>)
+      .countDocuments({
+        customerId: new mongoose.Types.ObjectId(userId),
+        vehicleStatus: 'Active',
+      });
 
     const created = await (VehicleModel as mongoose.Model<Vehicle>).create({
       customerId: new mongoose.Types.ObjectId(userId),
@@ -1498,7 +1648,12 @@ export class CustomerBookingService {
       vehicleStatus: 'Active',
     });
 
-    return created.toObject();
+    return {
+      ...created.toObject(),
+      hasActiveBooking: false,
+      activeBookingReference: null,
+      activeBookingStatus: null,
+    };
   }
 
   /**
@@ -1519,12 +1674,14 @@ export class CustomerBookingService {
       throw new AppError('Invalid parking slot ID.', 400, 'INVALID_SLOT_ID');
     }
 
+    const platformBookingFee = await adminSettingsService.getPlatformBookingFee();
     const { entryDate, exitDate, breakdown } = this.calculatePriceAndValidatePeriod({
       vehicleType: params.vehicleType,
       scheduledEntryTime: params.scheduledEntryTime,
       scheduledExitTime: params.scheduledExitTime,
       pricing,
       operating,
+      platformBookingFee,
     });
 
     const operationalVehicleSlotsCount = await (
@@ -1633,11 +1790,21 @@ export class CustomerBookingService {
       );
     }
 
-    if (!this.isSlotCompatibleWithVehicle(slot.supportedVehicleType, params.vehicleType)) {
+    const isOverflowSlot = Boolean(slot.isOverflow);
+
+    if (!this.isSlotCompatibleWithVehicle(slot.supportedVehicleType, params.vehicleType, isOverflowSlot)) {
       throw new AppError(
         `Slot ${slot.slotNumber} is designated for ${slot.supportedVehicleType} vehicles and is not compatible with ${params.vehicleType}.`,
         400,
         'INCOMPATIBLE_VEHICLE_TYPE',
+      );
+    }
+
+    if (isOverflowSlot) {
+      throw new AppError(
+        `Slot ${slot.slotNumber} is designated as an Overflow bay and is frozen for direct customer bookings. Overflow bays cannot be booked online and are strictly reserved for automatic system overstay reassignments and authorized security staff.`,
+        400,
+        'OVERFLOW_SLOT_NOT_BOOKABLE_BY_CUSTOMER',
       );
     }
 
@@ -1723,6 +1890,35 @@ export class CustomerBookingService {
       );
     }
 
+    // Enforce 1 active booking per vehicle rule:
+    // A vehicle cannot book a slot if it currently has an active booking (Confirmed, Active, Overstay)
+    const existingActiveBooking = await (BookingModel as mongoose.Model<Booking>)
+      .findOne({
+        vehicleId: vehicle._id,
+        bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+      })
+      .lean()
+      .exec();
+
+    if (existingActiveBooking) {
+      throw new AppError(
+        `Vehicle ${vehicle.vehicleNumber} already has an active booking (${existingActiveBooking.bookingReference}) with status "${existingActiveBooking.bookingStatus}". Only one active booking is allowed per vehicle. Please complete or exit the existing booking before booking again.`,
+        400,
+        'VEHICLE_HAS_ACTIVE_BOOKING',
+      );
+    }
+
+    // Clean up any stale unfulfilled 'Pending Payment' bookings for this vehicle
+    await (BookingModel as mongoose.Model<Booking>).updateMany(
+      {
+        vehicleId: vehicle._id,
+        bookingStatus: 'Pending Payment',
+      },
+      {
+        $set: { bookingStatus: 'Cancelled' },
+      },
+    );
+
     const vehicleType = vehicle.vehicleType as SupportedVehicleType;
 
     // Perform full backend eligibility & conflict validation
@@ -1777,6 +1973,7 @@ export class CustomerBookingService {
       parkingRateAtBooking: validated.breakdown.hourlyRate,
       overstayRateAtBooking: validated.breakdown.overstayRateAtBooking,
       baseAmount: validated.breakdown.baseAmount,
+      platformBookingFee: validated.breakdown.platformBookingFee ?? 0,
       additionalCharges: validated.breakdown.additionalCharges,
       totalAmount: amount,
     });
@@ -1795,6 +1992,7 @@ export class CustomerBookingService {
       paymentStatus: 'PENDING',
       gatewayOrderId: order.id,
       amount,
+      platformBookingFee: validated.breakdown.platformBookingFee ?? 0,
       additionalCharges: 0,
       refundAmount: 0,
       remarks: `Online slot reservation for ${validated.lot.parkingName} — Slot ${validated.slot.slotNumber}`,
@@ -1950,6 +2148,7 @@ export class CustomerBookingService {
           gracePeriodMinutes: booking.gracePeriodMinutes,
           bookingDurationMinutes: booking.bookingDurationMinutes,
           baseAmount: booking.baseAmount,
+          platformBookingFee: booking.platformBookingFee ?? 0,
           taxes: 0,
           discountAmount: 0,
           additionalCharges: booking.additionalCharges,
@@ -2055,6 +2254,52 @@ export class CustomerBookingService {
           if (overlapping) {
             conflictDetected = true;
             conflictReason = `Slot ${freshSlot.slotNumber} was just reserved by another customer for an overlapping period.`;
+          } else {
+            // Check if vehicle already has another active Confirmed/Active/Overstay booking
+            const concurrentVehicleActive = await (BookingModel as mongoose.Model<Booking>)
+              .findOne({
+                _id: { $ne: booking._id },
+                vehicleId: booking.vehicleId,
+                bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+              })
+              .session(session)
+              .exec();
+
+            if (concurrentVehicleActive) {
+              conflictDetected = true;
+              conflictReason = `Vehicle already has an active booking (${concurrentVehicleActive.bookingReference}). Only one active booking is permitted per vehicle.`;
+            } else if (freshSlot.isOverflow) {
+              const maxOverflowCap = freshLot.overflowCapacity ?? 0;
+              if (maxOverflowCap <= 0) {
+                conflictDetected = true;
+                conflictReason = 'Overflow parking allocation is currently disabled for this facility.';
+              } else {
+                const overflowSlotsInLot = await (ParkingSlotModel as mongoose.Model<ParkingSlot>)
+                  .find({ parkingLotId: freshLot._id, isOverflow: true })
+                  .select('_id')
+                  .session(session)
+                  .lean()
+                  .exec();
+
+                const overflowSlotIdList = overflowSlotsInLot.map((s) => s._id);
+                const overlappingOverflowCount = await (BookingModel as mongoose.Model<Booking>)
+                  .countDocuments({
+                    _id: { $ne: booking._id },
+                    parkingLotId: freshLot._id,
+                    currentSlotId: { $in: overflowSlotIdList },
+                    bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+                    scheduledEntryTime: { $lt: booking.scheduledExitTime },
+                    scheduledExitTime: { $gt: booking.scheduledEntryTime },
+                  })
+                  .session(session)
+                  .exec();
+
+                if (overlappingOverflowCount >= maxOverflowCap) {
+                  conflictDetected = true;
+                  conflictReason = 'Overflow capacity threshold was reached during transaction processing.';
+                }
+              }
+            }
           }
         }
 
@@ -2264,6 +2509,7 @@ export class CustomerBookingService {
           bookingDurationMinutes: booking.bookingDurationMinutes,
           parkingRateAtBooking: booking.parkingRateAtBooking,
           baseAmount: booking.baseAmount,
+          platformBookingFee: booking.platformBookingFee ?? 0,
           taxes: 0,
           discountAmount: 0,
           additionalCharges: booking.additionalCharges,
@@ -2564,7 +2810,7 @@ export class CustomerBookingService {
     }
 
     const session = await mongoose.startSession();
-    let updatedSlotStatus = 'Occupied';
+    let updatedSlotStatus = 'Reserved';
 
     try {
       await session.withTransaction(async () => {
@@ -2615,7 +2861,7 @@ export class CustomerBookingService {
         booking.actualEntryTime = actualEntry;
         await booking.save({ session });
 
-        slot.slotStatus = 'Occupied';
+        slot.slotStatus = 'Reserved';
         slot.currentBookingId = booking._id as mongoose.Types.ObjectId;
         await slot.save({ session });
         updatedSlotStatus = slot.slotStatus;
@@ -2708,7 +2954,17 @@ export class CustomerBookingService {
         }
 
         const now = params.detectedAt ?? new Date();
-        const overstayStart = booking.scheduledExitTime;
+        let overstayStart = new Date(booking.scheduledExitTime);
+        if (Array.isArray(booking.extensions)) {
+          for (const ext of booking.extensions) {
+            if (ext && ext.newScheduledExitTime && ext.status !== 'FAILED' && ext.status !== 'CANCELLED') {
+              const d = new Date(ext.newScheduledExitTime);
+              if (!isNaN(d.getTime()) && d.getTime() > overstayStart.getTime()) {
+                overstayStart = d;
+              }
+            }
+          }
+        }
         const overstayMinutes = Math.max(
           1,
           Math.ceil((now.getTime() - overstayStart.getTime()) / (60 * 1000)),
@@ -2717,19 +2973,32 @@ export class CustomerBookingService {
         const ratePerHour = booking.overstayRateAtBooking || booking.parkingRateAtBooking || 0;
         const overstayCharge = Math.round(billableOverstayHours * ratePerHour);
 
+        const wasAlreadyOverstay = booking.bookingStatus === 'Overstay';
+
         booking.bookingStatus = 'Overstay';
         booking.overstayDetected = true;
         booking.overstayStartedAt = booking.overstayStartedAt ?? overstayStart;
         booking.overstayDurationMinutes = overstayMinutes;
         booking.overstayCharge = overstayCharge;
         booking.additionalCharges = overstayCharge;
-        booking.totalAmount = booking.baseAmount + overstayCharge;
+        booking.totalAmount = booking.baseAmount + (booking.platformBookingFee || 0) + overstayCharge;
         await booking.save({ session });
 
         slot.slotStatus = 'Occupied';
         slot.currentBookingId = booking._id as mongoose.Types.ObjectId;
         await slot.save({ session });
         updatedSlotStatus = slot.slotStatus;
+
+        await (VehicleMovementLogModel as any).updateMany(
+          { bookingId: booking._id, exitTime: null },
+          {
+            $set: {
+              movementStatus: 'Overstayed',
+              overstayMinutes,
+            },
+          },
+          { session },
+        );
 
         await this.reconcileHierarchyCounters({
           parkingLotId: booking.parkingLotId as mongoose.Types.ObjectId,
@@ -2738,25 +3007,27 @@ export class CustomerBookingService {
           session,
         });
 
-        await (BookingTimelineModel as mongoose.Model<BookingTimeline>).create(
-          [
-            {
-              bookingId: booking._id,
-              performedBy: null,
-              eventCode: 'OVERSTAY_DETECTED',
-              eventType: 'Overstay Detected',
-              eventTitle: 'Booking Entered Overstay',
-              eventDescription: `Overstay of ${overstayMinutes} minute(s) detected on Bay ${slot.slotNumber}. Additional charge: ₹${overstayCharge}.`,
-              eventSource: 'System',
-              eventTime: now,
-              metadata: {
-                overstayDurationMinutes: overstayMinutes,
-                overstayCharge,
+        if (!wasAlreadyOverstay) {
+          await (BookingTimelineModel as mongoose.Model<BookingTimeline>).create(
+            [
+              {
+                bookingId: booking._id,
+                performedBy: null,
+                eventCode: 'OVERSTAY_DETECTED',
+                eventType: 'Overstay Detected',
+                eventTitle: 'Booking Entered Overstay',
+                eventDescription: `Overstay of ${overstayMinutes} minute(s) detected on Bay ${slot.slotNumber}. Additional charge: ₹${overstayCharge}.`,
+                eventSource: 'System',
+                eventTime: now,
+                metadata: {
+                  overstayDurationMinutes: overstayMinutes,
+                  overstayCharge,
+                },
               },
-            },
-          ],
-          { session },
-        );
+            ],
+            { session },
+          );
+        }
       });
     } finally {
       await session.endSession();
@@ -2766,6 +3037,17 @@ export class CustomerBookingService {
       .findById(params.bookingId)
       .lean()
       .exec();
+
+    if (updatedBooking) {
+      emitBookingStatusUpdate({
+        bookingId: updatedBooking._id.toString(),
+        bookingReference: updatedBooking.bookingReference,
+        parkingLotId: updatedBooking.parkingLotId.toString(),
+        customerId: updatedBooking.customerId.toString(),
+        bookingStatus: 'Overstay',
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     return {
       bookingId: params.bookingId,
@@ -2902,12 +3184,12 @@ export class CustomerBookingService {
     bookingId: string;
     userId?: string | undefined;
     cancelledBy?:
-      | 'Customer'
-      | 'Security Staff'
-      | 'Parking Owner'
-      | 'Administrator'
-      | 'System'
-      | undefined;
+    | 'Customer'
+    | 'Security Staff'
+    | 'Parking Owner'
+    | 'Administrator'
+    | 'System'
+    | undefined;
     reason?: string | undefined;
   }) {
     if (!mongoose.Types.ObjectId.isValid(params.bookingId)) {
@@ -3058,6 +3340,82 @@ export class CustomerBookingService {
       .lean()
       .exec();
 
+    // Send cancellation receipt email and create notifications
+    if (updatedBooking) {
+      try {
+        const [customerDoc, lotDoc, slotDoc, paymentDoc] = await Promise.all([
+          updatedBooking.customerId
+            ? (UserModel as mongoose.Model<User>).findById(updatedBooking.customerId).lean().exec()
+            : null,
+          updatedBooking.parkingLotId
+            ? (ParkingLotModel as mongoose.Model<ParkingLot>).findById(updatedBooking.parkingLotId).lean().exec()
+            : null,
+          updatedBooking.currentSlotId
+            ? (ParkingSlotModel as mongoose.Model<ParkingSlot>).findById(updatedBooking.currentSlotId).lean().exec()
+            : null,
+          (PaymentModel as mongoose.Model<Payment>)
+            .findOne({
+              bookingId: updatedBooking._id,
+              paymentStatus: { $in: ['REFUNDED', 'SUCCESSFUL', 'CASH_REVERSAL_PENDING'] },
+            })
+            .lean()
+            .exec(),
+        ]);
+
+        const refundAmount = updatedBooking.refundAmount || paymentDoc?.refundAmount || 0;
+        const paymentMethod = paymentDoc?.paymentMethod || 'RAZORPAY';
+        const refundStatus = refundAmount > 0 ? 'Refund Completed' : 'No Refund Applicable';
+
+        // 1. Dispatch Cancellation Receipt Email
+        if (customerDoc?.email) {
+          void emailService.sendBookingCancelledEmail({
+            to: customerDoc.email,
+            customerName: customerDoc.fullName || 'Valued Customer',
+            bookingReference: updatedBooking.bookingReference,
+            parkingName: lotDoc?.parkingName || 'ParkEase Parking Facility',
+            slotNumber: slotDoc?.slotNumber || 'Allocated Bay',
+            cancellationReason: updatedBooking.cancellationReason || params.reason || 'Booking cancelled.',
+            cancelledBy: updatedBooking.cancellationBy || params.cancelledBy || 'Customer',
+            refundAmount,
+            paymentMethod,
+            refundStatus,
+          }).catch((emailErr) => {
+            console.warn('[CustomerBookingService] Cancellation receipt email warning:', emailErr);
+          });
+        }
+
+        // 2. In-app Notification for Customer
+        const notifRef = `NOTIF-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+        const notif = await (NotificationModel as any).create({
+          notificationReference: notifRef,
+          userId: updatedBooking.customerId,
+          bookingId: updatedBooking._id,
+          title: 'Booking Cancelled & Refund Notice',
+          message: `Your booking (${updatedBooking.bookingReference}) at ${lotDoc?.parkingName || 'ParkEase'} was cancelled. ${refundAmount > 0 ? `Refund of ₹${refundAmount.toFixed(2)} processed.` : ''}`,
+          notificationType: 'Booking',
+          eventType: 'Booking Cancelled',
+          priority: 'High',
+          deliveryChannel: 'In-App',
+          deliveryStatus: 'Delivered',
+          actionUrl: '/customer/bookings',
+        });
+        emitNewNotification(updatedBooking.customerId.toString(), notif);
+
+        // 3. Socket.IO status update
+        emitBookingStatusUpdate({
+          bookingId: updatedBooking._id.toString(),
+          bookingReference: updatedBooking.bookingReference,
+          parkingLotId: updatedBooking.parkingLotId.toString(),
+          customerId: updatedBooking.customerId.toString(),
+          bookingStatus: 'Cancelled',
+          paymentStatus: paymentDoc?.paymentStatus || 'REFUNDED',
+          timestamp: new Date().toISOString(),
+        });
+      } catch (postCancelErr) {
+        console.warn('[CustomerBookingService] Post-cancellation notification warning:', postCancelErr);
+      }
+    }
+
     return {
       bookingId: params.bookingId,
       bookingReference: updatedBooking?.bookingReference ?? '',
@@ -3173,12 +3531,20 @@ export class CustomerBookingService {
     };
   }
 
+  private lastGlobalReconcileAt = 0;
+
   /**
    * Reconciles expired Confirmed bookings to No Show and overdue Active bookings to Overstay,
    * keeping customer booking tabs, counts, and physical bay states authoritative in real time.
    */
   public async reconcileBookingStatuses(customerId?: mongoose.Types.ObjectId): Promise<void> {
     const now = new Date();
+    if (!customerId) {
+      if (now.getTime() - this.lastGlobalReconcileAt < 3000) {
+        return;
+      }
+      this.lastGlobalReconcileAt = now.getTime();
+    }
 
     // 1. Confirmed bookings whose arrival grace window has elapsed without gate entry -> No Show
     const expiredConfirmedFilter: Record<string, unknown> = {
@@ -3227,21 +3593,11 @@ export class CustomerBookingService {
       // Non-blocking background reconciliation
     }
 
-    // 2. Active bookings past scheduledExitTime + gracePeriod without checkout -> Overstay
+    // 2. Active or Overstay bookings past scheduledExitTime without checkout -> Overstay & live charge update
     const overdueActiveFilter: Record<string, unknown> = {
-      bookingStatus: 'Active',
+      bookingStatus: { $in: ['Active', 'Overstay'] },
       actualExitTime: null,
-      $expr: {
-        $lte: [
-          {
-            $add: [
-              '$scheduledExitTime',
-              { $multiply: [{ $ifNull: ['$gracePeriodMinutes', 15] }, 60000] },
-            ],
-          },
-          now,
-        ],
-      },
+      scheduledExitTime: { $lte: now },
     };
     if (customerId) {
       overdueActiveFilter.customerId = customerId;
@@ -3250,19 +3606,77 @@ export class CustomerBookingService {
     try {
       const overdueActiveBookings = await (BookingModel as mongoose.Model<Booking>)
         .find(overdueActiveFilter)
-        .select('_id')
-        .limit(25)
+        .select('_id bookingStatus scheduledExitTime extensions overstayDurationMinutes overstayCharge overstayRateAtBooking parkingRateAtBooking baseAmount platformBookingFee overstayStartedAt')
+        .sort({ scheduledExitTime: -1 })
+        .limit(100)
         .lean()
         .exec();
 
+      const bulkRefreshOps: any[] = [];
+      let newlyTransitionedCount = 0;
+
       for (const b of overdueActiveBookings) {
         try {
-          await this.markBookingOverstay({
-            bookingId: b._id.toString(),
-          });
+          let effectiveExitTime = new Date(b.scheduledExitTime);
+          if (Array.isArray(b.extensions)) {
+            for (const ext of b.extensions) {
+              if (ext && ext.newScheduledExitTime && ext.status !== 'FAILED' && ext.status !== 'CANCELLED') {
+                const d = new Date(ext.newScheduledExitTime);
+                if (!isNaN(d.getTime()) && d.getTime() > effectiveExitTime.getTime()) {
+                  effectiveExitTime = d;
+                }
+              }
+            }
+          }
+
+          if (now.getTime() <= effectiveExitTime.getTime()) {
+            continue;
+          }
+
+          const expectedMins = Math.max(
+            1,
+            Math.ceil((now.getTime() - effectiveExitTime.getTime()) / (60 * 1000)),
+          );
+          const expectedHours = Math.max(1, Math.ceil(expectedMins / 60));
+          const rate = b.overstayRateAtBooking || b.parkingRateAtBooking || 0;
+          const expectedCharge = Math.round(expectedHours * rate);
+
+          if (b.bookingStatus === 'Active') {
+            if (newlyTransitionedCount < 10) {
+              newlyTransitionedCount++;
+              await this.markBookingOverstay({
+                bookingId: b._id.toString(),
+                detectedAt: now,
+              });
+            }
+          } else if (
+            b.overstayDurationMinutes !== expectedMins ||
+            b.overstayCharge !== expectedCharge ||
+            !b.overstayStartedAt
+          ) {
+            bulkRefreshOps.push({
+              updateOne: {
+                filter: { _id: b._id },
+                update: {
+                  $set: {
+                    overstayDetected: true,
+                    overstayStartedAt: b.overstayStartedAt ?? effectiveExitTime,
+                    overstayDurationMinutes: expectedMins,
+                    overstayCharge: expectedCharge,
+                    additionalCharges: expectedCharge,
+                    totalAmount: (b.baseAmount || 0) + ((b as any).platformBookingFee || 0) + expectedCharge,
+                  },
+                },
+              },
+            });
+          }
         } catch {
           // Continue gracefully
         }
+      }
+
+      if (bulkRefreshOps.length > 0) {
+        await (BookingModel as mongoose.Model<Booking>).bulkWrite(bulkRefreshOps, { ordered: false });
       }
     } catch {
       // Non-blocking background reconciliation
@@ -3368,20 +3782,38 @@ export class CustomerBookingService {
           : null;
 
       const entryTimeMs = new Date(booking.scheduledEntryTime).getTime();
-      const exitTimeMs = new Date(booking.scheduledExitTime).getTime();
+      let exitTimeMs = new Date(booking.scheduledExitTime).getTime();
+      if (Array.isArray(booking.extensions)) {
+        for (const ext of booking.extensions) {
+          if (ext && ext.newScheduledExitTime && ext.status !== 'FAILED' && ext.status !== 'CANCELLED') {
+            const d = new Date(ext.newScheduledExitTime).getTime();
+            if (!Number.isNaN(d) && d > exitTimeMs) {
+              exitTimeMs = d;
+            }
+          }
+        }
+      }
       const graceMins = booking.gracePeriodMinutes ?? 15;
-      const graceEndsAtDate = booking.gracePeriodEndsAt
-        ? new Date(booking.gracePeriodEndsAt)
-        : new Date(exitTimeMs + graceMins * 60 * 1000);
+      const isLiveOverstay =
+        (booking.bookingStatus === 'Active' || booking.bookingStatus === 'Overstay') &&
+        !booking.actualExitTime &&
+        nowMs > exitTimeMs;
+
+      const graceEndsAtDate =
+        booking.bookingStatus === 'Active' || booking.bookingStatus === 'Overstay'
+          ? new Date(exitTimeMs)
+          : booking.gracePeriodEndsAt
+            ? new Date(booking.gracePeriodEndsAt)
+            : new Date(entryTimeMs + graceMins * 60 * 1000);
 
       let remainingMinutes: number | null = null;
-      if (booking.bookingStatus === 'Active') {
+      if (booking.bookingStatus === 'Active' && !isLiveOverstay) {
         remainingMinutes = Math.max(0, Math.ceil((exitTimeMs - nowMs) / (60 * 1000)));
       } else if (booking.bookingStatus === 'Confirmed' && entryTimeMs > nowMs) {
         remainingMinutes = Math.max(0, Math.ceil((entryTimeMs - nowMs) / (60 * 1000)));
       }
 
-      const status = booking.bookingStatus as CanonicalBookingStatus;
+      const status = (isLiveOverstay ? 'Overstay' : booking.bookingStatus) as CanonicalBookingStatus;
       const canViewQr =
         (status === 'Confirmed' || status === 'Active' || status === 'Overstay') &&
         Boolean(booking.qrCode);
@@ -3390,8 +3822,8 @@ export class CustomerBookingService {
         status !== 'Pending Payment' &&
         Boolean(
           primaryPayment &&
-            (primaryPayment.paymentStatus === 'SUCCESSFUL' ||
-              primaryPayment.paymentStatus === 'REFUNDED'),
+          (primaryPayment.paymentStatus === 'SUCCESSFUL' ||
+            primaryPayment.paymentStatus === 'REFUNDED'),
         );
 
       const isReassigned =
@@ -3404,7 +3836,17 @@ export class CustomerBookingService {
       const refundPct =
         refundAmt > 0 && paidAmt > 0 ? Math.min(100, Math.round((refundAmt / paidAmt) * 100)) : null;
 
-      const overstayChargeVal = booking.overstayCharge || 0;
+      const liveOverstayMinutes = isLiveOverstay
+        ? Math.max(1, Math.ceil((nowMs - exitTimeMs) / (60 * 1000)))
+        : booking.overstayDurationMinutes || 0;
+      const billableOverstayHours = isLiveOverstay
+        ? Math.max(1, Math.ceil(liveOverstayMinutes / 60))
+        : 0;
+      const overstayRate = booking.overstayRateAtBooking || booking.parkingRateAtBooking || 0;
+      const overstayChargeVal = isLiveOverstay
+        ? Math.max(booking.overstayCharge || 0, Math.round(billableOverstayHours * overstayRate))
+        : booking.overstayCharge || 0;
+
       let additionalChargePaymentStatus: 'PAID' | 'UNPAID' | 'NOT_APPLICABLE' = 'NOT_APPLICABLE';
       if (booking.overstayDetected || status === 'Overstay' || overstayChargeVal > 0) {
         additionalChargePaymentStatus = overstayPayment ? 'PAID' : 'UNPAID';
@@ -3442,10 +3884,10 @@ export class CustomerBookingService {
         originalSlot:
           isReassigned && originalSlotDoc
             ? {
-                _id: originalSlotDoc._id.toString(),
-                slotNumber: originalSlotDoc.slotNumber,
-                slotLabel: originalSlotDoc.slotLabel || originalSlotDoc.slotNumber,
-              }
+              _id: originalSlotDoc._id.toString(),
+              slotNumber: originalSlotDoc.slotNumber,
+              slotLabel: originalSlotDoc.slotLabel || originalSlotDoc.slotNumber,
+            }
             : null,
         vehicle: {
           _id: booking.vehicleId.toString(),
@@ -3473,6 +3915,7 @@ export class CustomerBookingService {
         parkingRateAtBooking: booking.parkingRateAtBooking,
         overstayRateAtBooking: booking.overstayRateAtBooking,
         baseAmount: booking.baseAmount,
+        platformBookingFee: (booking as any).platformBookingFee ?? 0,
         additionalCharges: booking.additionalCharges,
         totalAmount: booking.totalAmount,
         canViewQr,
@@ -3480,36 +3923,38 @@ export class CustomerBookingService {
         canDownloadReceipt,
         payment: primaryPayment
           ? {
-              paymentReference: primaryPayment.paymentReference,
-              paymentMethod: primaryPayment.paymentMethod,
-              paymentStatus: primaryPayment.paymentStatus as
-                | 'PENDING'
-                | 'SUCCESSFUL'
-                | 'FAILED'
-                | 'REFUNDED'
-                | 'CASH_REVERSAL_PENDING',
-              paymentDate: primaryPayment.paymentDate
-                ? new Date(primaryPayment.paymentDate).toISOString()
-                : null,
-              razorpayOrderId: primaryPayment.gatewayOrderId ?? null,
-              razorpayPaymentId: primaryPayment.gatewayPaymentId ?? null,
-              transactionId: primaryPayment.transactionId ?? null,
-              amount: primaryPayment.amount,
-              refundAmount: refundAmt,
-              refundStatus: latestRefund?.refundStatus ?? null,
-              refundReason: latestRefund?.refundReason ?? booking.cancellationReason ?? null,
-              refundPercentage: refundPct,
-              refundCompletedAt: latestRefund?.completedAt
-                ? new Date(latestRefund.completedAt).toISOString()
-                : null,
-            }
+            paymentReference: primaryPayment.paymentReference,
+            paymentMethod: primaryPayment.paymentMethod,
+            paymentStatus: primaryPayment.paymentStatus as
+              | 'PENDING'
+              | 'SUCCESSFUL'
+              | 'FAILED'
+              | 'REFUNDED'
+              | 'CASH_REVERSAL_PENDING',
+            paymentDate: primaryPayment.paymentDate
+              ? new Date(primaryPayment.paymentDate).toISOString()
+              : null,
+            razorpayOrderId: primaryPayment.gatewayOrderId ?? null,
+            razorpayPaymentId: primaryPayment.gatewayPaymentId ?? null,
+            transactionId: primaryPayment.transactionId ?? null,
+            amount: primaryPayment.amount,
+            refundAmount: refundAmt,
+            refundStatus: latestRefund?.refundStatus ?? null,
+            refundReason: latestRefund?.refundReason ?? booking.cancellationReason ?? null,
+            refundPercentage: refundPct,
+            refundCompletedAt: latestRefund?.completedAt
+              ? new Date(latestRefund.completedAt).toISOString()
+              : null,
+          }
           : null,
         overstay: {
-          overstayDetected: Boolean(booking.overstayDetected || status === 'Overstay'),
+          overstayDetected: Boolean(booking.overstayDetected || status === 'Overstay' || isLiveOverstay),
           overstayStartedAt: booking.overstayStartedAt
             ? new Date(booking.overstayStartedAt).toISOString()
-            : null,
-          overstayDurationMinutes: booking.overstayDurationMinutes || 0,
+            : isLiveOverstay
+              ? new Date(exitTimeMs).toISOString()
+              : null,
+          overstayDurationMinutes: liveOverstayMinutes,
           overstayCharge: overstayChargeVal,
           additionalChargePaymentStatus,
         },
@@ -3530,15 +3975,15 @@ export class CustomerBookingService {
         cancellation:
           status === 'Cancelled' || status === 'No Show' || booking.cancellationReason
             ? {
-                cancellationReason: booking.cancellationReason ?? null,
-                cancellationBy: booking.cancellationBy ?? null,
-                cancelledAt: booking.updatedAt ? new Date(booking.updatedAt).toISOString() : null,
-                refundAmount: refundAmt,
-                refundPercentage: refundPct,
-                refundStatus:
-                  latestRefund?.refundStatus ??
-                  (refundAmt > 0 ? 'Refund Completed' : null),
-              }
+              cancellationReason: booking.cancellationReason ?? null,
+              cancellationBy: booking.cancellationBy ?? null,
+              cancelledAt: booking.updatedAt ? new Date(booking.updatedAt).toISOString() : null,
+              refundAmount: refundAmt,
+              refundPercentage: refundPct,
+              refundStatus:
+                latestRefund?.refundStatus ??
+                (refundAmt > 0 ? 'Refund Completed' : null),
+            }
             : null,
         noShowDetected: Boolean(booking.noShowDetected || status === 'No Show'),
         createdAt: booking.createdAt
@@ -3623,17 +4068,17 @@ export class CustomerBookingService {
     const customerLots =
       distinctLotIdsSet.size > 0
         ? await (ParkingLotModel as mongoose.Model<ParkingLot>)
-            .find(
-              {
-                _id: {
-                  $in: Array.from(distinctLotIdsSet).map((id) => new mongoose.Types.ObjectId(id)),
-                },
+          .find(
+            {
+              _id: {
+                $in: Array.from(distinctLotIdsSet).map((id) => new mongoose.Types.ObjectId(id)),
               },
-              '_id parkingName',
-            )
-            .sort({ parkingName: 1 })
-            .lean()
-            .exec()
+            },
+            '_id parkingName',
+          )
+          .sort({ parkingName: 1 })
+          .lean()
+          .exec()
         : [];
 
     const facilities = customerLots.map((l) => ({
@@ -3872,6 +4317,7 @@ export class CustomerBookingService {
           bookingDurationMinutes: enriched.bookingDurationMinutes,
           parkingRateAtBooking: enriched.parkingRateAtBooking,
           baseAmount: enriched.baseAmount,
+          platformBookingFee: (enriched as any).platformBookingFee ?? 0,
           taxes: 0,
           discountAmount: 0,
           additionalCharges: enriched.additionalCharges,
@@ -3999,12 +4445,12 @@ export class CustomerBookingService {
     const digitalReceiptsCount =
       bookingIds.length > 0
         ? await (PaymentModel as mongoose.Model<Payment>)
-            .countDocuments({
-              bookingId: { $in: bookingIds },
-              paymentTypeCode: 'BOOKING',
-              paymentStatus: { $in: ['SUCCESSFUL', 'REFUNDED'] },
-            })
-            .exec()
+          .countDocuments({
+            bookingId: { $in: bookingIds },
+            paymentTypeCode: 'BOOKING',
+            paymentStatus: { $in: ['SUCCESSFUL', 'REFUNDED'] },
+          })
+          .exec()
         : 0;
 
     // 2. Identify Active Booking (Active or Overstay) & Next Upcoming Confirmed Booking

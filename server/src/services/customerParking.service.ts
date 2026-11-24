@@ -1192,6 +1192,33 @@ export class CustomerParkingService {
   }
 
   /**
+   * Explicitly deactivates/removes customer's favourite status for a parking facility
+   */
+  async removeFavourite(userId: string, parkingLotId: string): Promise<{ isFavourite: boolean }> {
+    if (!mongoose.Types.ObjectId.isValid(parkingLotId)) {
+      throw new AppError('Invalid parking lot ID format.', 400, 'INVALID_ID');
+    }
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      throw new AppError('Invalid user ID.', 401, 'UNAUTHORIZED');
+    }
+
+    const customerId = new mongoose.Types.ObjectId(userId);
+    const lotObjectId = new mongoose.Types.ObjectId(parkingLotId);
+
+    const existing = await (FavouriteLocationModel as mongoose.Model<FavouriteLocation>).findOne({
+      customerId,
+      parkingLotId: lotObjectId,
+    });
+
+    if (existing && existing.isActive) {
+      existing.isActive = false;
+      await existing.save();
+    }
+
+    return { isFavourite: false };
+  }
+
+  /**
    * Retrieves all active favourite parking locations for the authenticated customer,
    * enriched with live slot availability, pricing, and optional distance.
    */

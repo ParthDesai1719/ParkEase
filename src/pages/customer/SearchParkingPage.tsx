@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Search,
   X,
@@ -35,17 +36,23 @@ import { toast } from 'sonner';
 
 import {
   searchCustomerParkingLots,
+  getCustomerFavourites,
   type CustomerParkingLotResult,
   type CustomerParkingSearchParams,
 } from '@/api/customerParking.api';
 import { SearchFiltersSidebar } from '@/components/customer/SearchFiltersSidebar';
 import { ParkingResultCard } from '@/components/customer/ParkingResultCard';
 import { ParkingSearchMap } from '@/components/customer/ParkingSearchMap';
+import { useLiveSync } from '@/hooks/useLiveSync';
 
 export const SearchParkingPage: React.FC = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialSearch = searchParams.get('search') || searchParams.get('q') || '';
+  const initialVehicleType = (searchParams.get('vehicleType') as any) || 'All';
+
   // 1. Search Query & Geolocation State
-  const [searchInput, setSearchInput] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [searchInput, setSearchInput] = useState(initialSearch);
+  const [debouncedSearch, setDebouncedSearch] = useState(initialSearch);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(
     null,
   );
@@ -56,7 +63,8 @@ export const SearchParkingPage: React.FC = () => {
 
   // 2. Active Filters & Sorting State
   const [filters, setFilters] = useState<CustomerParkingSearchParams>({
-    vehicleType: 'All',
+    search: initialSearch || undefined,
+    vehicleType: initialVehicleType || 'All',
     sortBy: 'lowestPrice',
     sortOrder: 'asc',
     page: 1,
@@ -70,6 +78,7 @@ export const SearchParkingPage: React.FC = () => {
 
   // 4. Data Fetching State
   const [parkingLots, setParkingLots] = useState<CustomerParkingLotResult[]>([]);
+  const [favouriteLotIds, setFavouriteLotIds] = useState<Set<string>>(new Set());
   const [totalResults, setTotalResults] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
   const [currentPage, setCurrentPage] = useState(1);
@@ -79,14 +88,69 @@ export const SearchParkingPage: React.FC = () => {
 
   const resultsListRef = useRef<HTMLDivElement>(null);
 
-  // Debounce search input (400ms)
+  // Fetch authenticated customer's favourite facility IDs
+  useEffect(() => {
+    let isMounted = true;
+    getCustomerFavourites()
+      .then((favs) => {
+        if (!isMounted) return;
+        setFavouriteLotIds(new Set(favs.map((f) => f._id)));
+      })
+      .catch((err) => {
+        console.warn('Could not load user favourites:', err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Synchronize when URL search parameters change
+  useEffect(() => {
+    const urlSearch = searchParams.get('search') || searchParams.get('q') || '';
+    const urlVehicleType = (searchParams.get('vehicleType') as any) || 'All';
+
+    setSearchInput((prev) => (prev !== urlSearch ? urlSearch : prev));
+    setDebouncedSearch((prev) => (prev !== urlSearch ? urlSearch : prev));
+    setFilters((prev) => {
+      const isSearchChanged = (prev.search || '') !== urlSearch;
+      const isVehicleTypeChanged = (prev.vehicleType || 'All') !== urlVehicleType;
+
+      if (!isSearchChanged && !isVehicleTypeChanged) return prev;
+
+      return {
+        ...prev,
+        search: urlSearch || undefined,
+        vehicleType: urlVehicleType || prev.vehicleType || 'All',
+        page: 1,
+      };
+    });
+  }, [searchParams]);
+
+  // Debounce search input (400ms) and keep URL search parameter in sync
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(searchInput);
-      setFilters((prev) => ({ ...prev, search: searchInput || undefined, page: 1 }));
+      setFilters((prev) => {
+        if ((prev.search || '') === searchInput) return prev;
+        return { ...prev, search: searchInput || undefined, page: 1 };
+      });
+
+      // Keep URL search param in sync without adding extraneous history entries
+      const currentUrlParam = searchParams.get('search') || searchParams.get('q') || '';
+      if (searchInput !== currentUrlParam) {
+        const nextParams = new URLSearchParams(searchParams);
+        if (searchInput.trim()) {
+          nextParams.set('search', searchInput.trim());
+          nextParams.delete('q');
+        } else {
+          nextParams.delete('search');
+          nextParams.delete('q');
+        }
+        setSearchParams(nextParams, { replace: true });
+      }
     }, 400);
     return () => clearTimeout(timer);
-  }, [searchInput]);
+  }, [searchInput, searchParams, setSearchParams]);
 
   // Request Browser Geolocation
   const handleRequestLocation = useCallback(() => {
@@ -135,10 +199,12 @@ export const SearchParkingPage: React.FC = () => {
   }, []);
 
   // Fetch Parking Lots from Backend API
-  const fetchParkingLots = useCallback(async () => {
-    setIsLoading(true);
-    setHasError(false);
-    setErrorMessage(null);
+  const fetchParkingLots = useCallback(async (isSilent = false) => {
+    if (!isSilent) {
+      setIsLoading(true);
+      setHasError(false);
+      setErrorMessage(null);
+    }
 
     try {
       const response = await searchCustomerParkingLots(filters);
@@ -151,14 +217,23 @@ export const SearchParkingPage: React.FC = () => {
         setSelectedLotId(response.parkingLots[0]._id);
       }
     } catch (err: unknown) {
-      setHasError(true);
-      const msg = err instanceof Error ? err.message : 'Failed to search parking facilities.';
-      setErrorMessage(msg);
-      toast.error(msg);
+      if (!isSilent) {
+        setHasError(true);
+        const msg = err instanceof Error ? err.message : 'Failed to search parking facilities.';
+        setErrorMessage(msg);
+        toast.error(msg);
+      }
     } finally {
-      setIsLoading(false);
+      if (!isSilent) {
+        setIsLoading(false);
+      }
     }
   }, [filters, selectedLotId]);
+
+  // Silent live sync across socket events and background interval
+  useLiveSync(() => {
+    void fetchParkingLots(true);
+  });
 
   useEffect(() => {
     let isMounted = true;
@@ -202,6 +277,7 @@ export const SearchParkingPage: React.FC = () => {
   const handleResetFilters = () => {
     setSearchInput('');
     setDebouncedSearch('');
+    setSearchParams(new URLSearchParams(), { replace: true });
     setFilters({
       vehicleType: 'All',
       sortBy: userLocation ? 'distance' : 'lowestPrice',
@@ -648,6 +724,18 @@ export const SearchParkingPage: React.FC = () => {
                   key={lot._id}
                   parkingLot={lot}
                   isSelected={lot._id === selectedLotId}
+                  isFavourite={favouriteLotIds.has(lot._id)}
+                  onToggleFavourite={(lotId, isFav) => {
+                    setFavouriteLotIds((prev) => {
+                      const next = new Set(prev);
+                      if (isFav) {
+                        next.add(lotId);
+                      } else {
+                        next.delete(lotId);
+                      }
+                      return next;
+                    });
+                  }}
                   onSelect={handleSelectLot}
                   onHover={(hoveredLot) => {
                     if (hoveredLot) setSelectedLotId(hoveredLot._id);

@@ -189,6 +189,13 @@ const paymentSchema = new mongoose.Schema(
       min: 0,
     },
 
+    platformBookingFee: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+    },
+
     additionalCharges: {
       type: Number,
       required: true,
@@ -223,6 +230,22 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       default: null,
       maxlength: 500,
+    },
+
+    collectedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+
+    cashConfirmedAt: {
+      type: Date,
+      default: null,
+    },
+
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
   },
   {

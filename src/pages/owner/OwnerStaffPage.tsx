@@ -9,7 +9,6 @@ import {
   UserPlus,
   MailQuestion,
   Search,
-  RefreshCw,
   Building2,
   Calendar,
   Send,
@@ -27,6 +26,7 @@ import {
 import { toast } from 'sonner';
 
 import { getOwnerParkingLots, type OfficialParkingLot } from '@/api/parkingLot.api';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import {
   ownerApi,
   type OwnerStaffItem,
@@ -107,7 +107,7 @@ export function OwnerStaffPage(): React.ReactElement {
   // Loading states
   const [loadingFacilities, setLoadingFacilities] = useState(true);
   const [loadingStaff, setLoadingStaff] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [, setIsRefreshing] = useState(false);
 
   // Search local input
   const [searchInput, setSearchInput] = useState(searchParam);
@@ -217,6 +217,10 @@ export function OwnerStaffPage(): React.ReactElement {
   useEffect(() => {
     fetchStaff();
   }, [fetchStaff]);
+
+  useLiveSync(() => {
+    void fetchStaff();
+  });
 
   // Socket listener for live updates
   useEffect(() => {
@@ -596,22 +600,6 @@ export function OwnerStaffPage(): React.ReactElement {
               </Select>
             )}
           </div>
-
-          {/* Refresh Button */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setIsRefreshing(true);
-              fetchStaff();
-            }}
-            disabled={loadingStaff || isRefreshing}
-            className="h-9 px-3 border-border/80 text-xs gap-1.5"
-            title="Refresh directory"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">Refresh</span>
-          </Button>
 
           {/* Invite Staff Button */}
           <Button

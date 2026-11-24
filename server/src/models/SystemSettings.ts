@@ -20,6 +20,19 @@ const systemSettingsSchema = new mongoose.Schema(
       trim: true,
     },
 
+    platformLogoUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+
+    timezone: {
+      type: String,
+      required: true,
+      default: 'Asia/Kolkata',
+      trim: true,
+    },
+
     applicationVersion: {
       type: String,
       required: true,
@@ -77,6 +90,40 @@ const systemSettingsSchema = new mongoose.Schema(
       min: 0,
     },
 
+    ownerRegistrationEnabled: {
+      type: Boolean,
+      required: true,
+      default: true,
+    },
+
+    ownerReviewSlaDays: {
+      type: Number,
+      required: true,
+      default: 3,
+      min: 1,
+    },
+
+    refundPolicyDescription: {
+      type: String,
+      default: 'Full refund if cancelled before booking start time minus grace period.',
+      trim: true,
+    },
+
+    taxRatePercentage: {
+      type: Number,
+      required: true,
+      default: 18,
+      min: 0,
+      max: 100,
+    },
+
+    platformBookingFee: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
+    },
+
     paymentGateway: {
       type: String,
       required: true,
@@ -85,6 +132,12 @@ const systemSettingsSchema = new mongoose.Schema(
     },
 
     allowWalkInBookings: {
+      type: Boolean,
+      required: true,
+      default: true,
+    },
+
+    allowOnlineBookings: {
       type: Boolean,
       required: true,
       default: true,

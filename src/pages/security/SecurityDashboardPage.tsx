@@ -6,7 +6,6 @@ import {
   Car,
   AlertTriangle,
   UserPlus,
-  RefreshCw,
   Building2,
   LogIn,
   LogOut,
@@ -43,7 +42,7 @@ import {
   type SecurityAssignedFacility,
   type SecurityDashboardStatsData,
 } from '@/api/security.api';
-import { getSocket } from '@/lib/socket';
+import { useLiveSync } from '@/hooks/useLiveSync';
 
 const LOCAL_STORAGE_KEY = 'parkease_security_active_lot_id';
 
@@ -57,7 +56,7 @@ export const SecurityDashboardPage: React.FC = () => {
 
   const [isLoadingFacilities, setIsLoadingFacilities] = useState<boolean>(true);
   const [isLoadingStats, setIsLoadingStats] = useState<boolean>(true);
-  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [, setIsRefreshing] = useState<boolean>(false);
   const [overstayModalOpen, setOverstayModalOpen] = useState<boolean>(false);
 
   // 1. Fetch Assigned Facilities on Mount
@@ -127,35 +126,12 @@ export const SecurityDashboardPage: React.FC = () => {
     localStorage.setItem(LOCAL_STORAGE_KEY, newLotId);
   };
 
-  // 4. Socket.IO Real-Time Telemetry Listener
-  useEffect(() => {
-    if (!selectedLotId) return;
-
-    const socket = getSocket();
-
-    // Join room for this parking lot
-    socket.emit('join_lot', selectedLotId);
-
-    const handleSlotUpdate = (data: { parkingLotId?: string }) => {
-      if (!data.parkingLotId || data.parkingLotId === selectedLotId) {
-        fetchStats(selectedLotId, true);
-      }
-    };
-
-    const handleBookingUpdate = (data: { parkingLotId?: string }) => {
-      if (!data.parkingLotId || data.parkingLotId === selectedLotId) {
-        fetchStats(selectedLotId, true);
-      }
-    };
-
-    socket.on('slot_status_changed', handleSlotUpdate);
-    socket.on('booking_status_changed', handleBookingUpdate);
-
-    return () => {
-      socket.off('slot_status_changed', handleSlotUpdate);
-      socket.off('booking_status_changed', handleBookingUpdate);
-    };
-  }, [selectedLotId, fetchStats]);
+  // 4. Real-time dynamic sync without ghost reload
+  useLiveSync(() => {
+    if (selectedLotId) {
+      void fetchStats(selectedLotId, true);
+    }
+  }, { enabled: Boolean(selectedLotId) });
 
   const activeFacility = facilities.find((f) => f.parkingLotId === selectedLotId);
 
@@ -243,18 +219,6 @@ export const SecurityDashboardPage: React.FC = () => {
               </Select>
             ) : null}
           </div>
-
-          {/* Refresh Button */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fetchStats(selectedLotId, true)}
-            disabled={!selectedLotId || isLoadingStats || isRefreshing}
-            className="h-10 px-3 border-border/80"
-            title="Refresh statistics"
-          >
-            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-          </Button>
 
           {/* Primary Quick Action: Scan QR */}
           <Link to="/security/scan">
@@ -569,7 +533,7 @@ export const SecurityDashboardPage: React.FC = () => {
                   <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-blue-500 transition-colors" />
                 </Link>
 
-                {/* 5. Log Gate Incident */}
+                {/* 5. Log Gate Incident & Solve Inquiries */}
                 <Link
                   to="/security/incidents"
                   className="flex items-center justify-between p-3 rounded-xl border border-border/60 bg-card hover:bg-muted/40 hover:border-rose-500/40 transition-all group"
@@ -579,8 +543,8 @@ export const SecurityDashboardPage: React.FC = () => {
                       <AlertTriangle className="w-5 h-5" />
                     </div>
                     <div>
-                      <p className="text-xs font-bold text-foreground">Log Gate Incident</p>
-                      <p className="text-[10px] text-muted-foreground">Damage, dispute, or infraction</p>
+                      <p className="text-xs font-bold text-foreground">Incidents &amp; Customer Inquiries</p>
+                      <p className="text-[10px] text-muted-foreground">Solve live customer helpline tickets</p>
                     </div>
                   </div>
                   <ChevronRight className="w-4 h-4 text-muted-foreground group-hover:text-rose-500 transition-colors" />

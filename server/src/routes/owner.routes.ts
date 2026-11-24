@@ -40,6 +40,31 @@ import {
   getOwnerParkingLotById,
   getOwnerParkingLotHierarchy,
 } from '../controllers/parkingLot.controller.js';
+import {
+  getOwnerRevenueOverviewHandler,
+  getOwnerRevenueTransactionsHandler,
+} from '../controllers/ownerRevenue.controller.js';
+import {
+  getOwnerVehiclesOverviewHandler,
+  getOwnerVehiclesListHandler,
+  getOwnerLiveVehicleLocatorHandler,
+} from '../controllers/ownerVehicles.controller.js';
+import {
+  getOwnerReviewsHandler,
+  submitOwnerReviewReplyHandler,
+} from '../controllers/ownerReviews.controller.js';
+import { getOwnerDashboardAnalyticsHandler } from '../controllers/ownerAnalytics.controller.js';
+import {
+  getOwnerBusinessSettingsHandler,
+  updateOwnerBusinessSettingsHandler,
+} from '../controllers/ownerSettings.controller.js';
+import {
+  getOwnerIncidentsHandler,
+  getOwnerIncidentDetailHandler,
+  addOwnerIncidentResponseHandler,
+  updateOwnerIncidentStatusHandler,
+} from '../controllers/ownerIncidents.controller.js';
+import { ownerEmailCenterController } from '../controllers/ownerEmailCenter.controller.js';
 import { ownerDocumentUpload } from '../middleware/upload.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 
@@ -236,6 +261,161 @@ router.post(
   requireAuth,
   requireRole('OWNER', 'PARKING_OWNER'),
   resendOwnerStaffInvitationHandler,
+);
+
+// ============================================================================
+// OWNER-01: Revenue & Financial Analytics
+// ============================================================================
+router.get(
+  '/revenue/overview',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerRevenueOverviewHandler,
+);
+
+router.get(
+  '/revenue/transactions',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerRevenueTransactionsHandler,
+);
+
+// ============================================================================
+// OWNER-02: Vehicle Management & Live Vehicle Locator
+// ============================================================================
+router.get(
+  '/vehicles/overview',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerVehiclesOverviewHandler,
+);
+
+router.get(
+  '/vehicles/list',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerVehiclesListHandler,
+);
+
+router.get(
+  '/vehicles/live-locator',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerLiveVehicleLocatorHandler,
+);
+
+// ============================================================================
+// OWNER-03: Reviews & Owner Replies
+// ============================================================================
+router.get(
+  '/reviews',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerReviewsHandler,
+);
+
+router.post(
+  '/reviews/:reviewId/reply',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  submitOwnerReviewReplyHandler,
+);
+
+// ============================================================================
+// OWNER-04: Dashboard Charts & Business Analytics
+// ============================================================================
+router.get(
+  '/analytics/dashboard',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerDashboardAnalyticsHandler,
+);
+
+// ============================================================================
+// OWNER-05: Business Settings
+// ============================================================================
+router.get(
+  '/settings',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerBusinessSettingsHandler,
+);
+
+router.put(
+  '/settings/:parkingLotId',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  updateOwnerBusinessSettingsHandler,
+);
+
+// ============================================================================
+// OWNER INCIDENTS & SECURITY COLLABORATION
+// ============================================================================
+router.get(
+  '/incidents',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerIncidentsHandler,
+);
+
+router.get(
+  '/incidents/:id',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  getOwnerIncidentDetailHandler,
+);
+
+router.post(
+  '/incidents/:id/responses',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  addOwnerIncidentResponseHandler,
+);
+
+router.patch(
+  '/incidents/:id/status',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  updateOwnerIncidentStatusHandler,
+);
+
+// ============================================================================
+// OWNER EMAIL CENTER (CUSTOMERS & ASSIGNED SECURITY STAFF)
+// ============================================================================
+router.get(
+  '/email-center/recipients',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  (req, res, next) => {
+    ownerEmailCenterController.getRecipients(req, res).catch(next);
+  },
+);
+
+router.post(
+  '/email-center/send',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  (req, res, next) => {
+    ownerEmailCenterController.sendEmail(req, res).catch(next);
+  },
+);
+
+router.get(
+  '/email-center/history',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  (req, res, next) => {
+    ownerEmailCenterController.getHistory(req, res).catch(next);
+  },
+);
+
+router.get(
+  '/email-center/overview',
+  requireAuth,
+  requireRole('OWNER', 'PARKING_OWNER'),
+  (req, res, next) => {
+    ownerEmailCenterController.getOverview(req, res).catch(next);
+  },
 );
 
 export default router;

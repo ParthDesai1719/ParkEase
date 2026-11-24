@@ -1,6 +1,6 @@
 import mongoose, { type InferSchemaType } from 'mongoose';
 
-const sourceValues = ['System', 'Owner'] as const;
+const sourceValues = ['System', 'Owner', 'Admin', 'Security'] as const;
 
 const emailTypeValues = [
   'CUSTOMER_COMMUNICATION',
@@ -11,6 +11,23 @@ const emailTypeValues = [
   'OWNER_REGISTRATION',
   'INCIDENT_NOTIFICATION',
   'SYSTEM_NOTIFICATION',
+  'ADMIN_COMMUNICATION',
+  'ANNOUNCEMENT',
+  'OWNER_COMMUNICATION',
+  'SECURITY_COMMUNICATION',
+  'STAFF_COMMUNICATION',
+] as const;
+
+const recipientCategoryValues = [
+  'ALL_OWNERS',
+  'ALL_CUSTOMERS',
+  'SPECIFIC_OWNER',
+  'SPECIFIC_CUSTOMER',
+  'ALL_STAFF',
+  'SPECIFIC_STAFF',
+  'ASSIGNED_OWNER',
+  'FACILITY_CUSTOMERS',
+  'OTHER',
 ] as const;
 
 const deliveryStatusValues = ['Pending', 'Sending', 'Sent', 'Failed', 'Retrying'] as const;
@@ -84,6 +101,19 @@ const emailLogSchema = new mongoose.Schema(
       enum: emailTypeValues,
     },
 
+    recipientCategory: {
+      type: String,
+      enum: recipientCategoryValues,
+      default: 'OTHER',
+    },
+
+    recipientCount: {
+      type: Number,
+      required: true,
+      default: 1,
+      min: 1,
+    },
+
     subject: {
       type: String,
       required: true,
@@ -94,7 +124,13 @@ const emailLogSchema = new mongoose.Schema(
     body: {
       type: String,
       required: true,
-      maxlength: 5000,
+      maxlength: 50000,
+    },
+
+    htmlBody: {
+      type: String,
+      default: null,
+      maxlength: 100000,
     },
 
     deliveryStatus: {
@@ -163,6 +199,8 @@ emailLogSchema.index({ deliveryStatus: 1 }, { name: 'IDX_Status' });
 emailLogSchema.index({ emailType: 1 }, { name: 'IDX_EmailType' });
 
 emailLogSchema.index({ source: 1 }, { name: 'IDX_Source' });
+
+emailLogSchema.index({ recipientCategory: 1 }, { name: 'IDX_RecipientCategory' });
 
 emailLogSchema.index({ createdAt: -1 }, { name: 'IDX_CreatedAt' });
 

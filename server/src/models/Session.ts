@@ -1,3 +1,4 @@
+import net from 'node:net';
 import mongoose, { type InferSchemaType } from 'mongoose';
 
 const loginMethodValues = ['Email', 'Mobile Number'] as const;
@@ -108,7 +109,7 @@ const sessionSchema = new mongoose.Schema(
           const ipv6 =
             /^(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}$|^(?:[A-Fa-f0-9]{1,4}:){1,7}:$|^(?:[A-Fa-f0-9]{1,4}:){1,6}:[A-Fa-f0-9]{1,4}$/;
 
-          return ipv4.test(value) || ipv6.test(value);
+          return ipv4.test(value) || ipv6.test(value) || net.isIP(value) !== 0;
         },
         message: 'ipAddress must be a valid IPv4 or IPv6 address.',
       },

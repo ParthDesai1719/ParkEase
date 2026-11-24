@@ -6,7 +6,6 @@ import {
   Building2,
   Search,
   Printer,
-  RefreshCw,
   Calendar,
   Car,
   User,
@@ -53,6 +52,7 @@ import {
   type MovementLogDetailResult,
   type MovementType,
 } from '@/api/security.api';
+import { useLiveSync } from '@/hooks/useLiveSync';
 
 const LOCAL_STORAGE_KEY = 'parkease_security_active_lot_id';
 
@@ -145,10 +145,10 @@ export const SecurityMovementLogsPage: React.FC = () => {
 
   // 2. Query movement logs from backend
   const fetchMovementLogs = useCallback(
-    async (pageToLoad: number = 1) => {
+    async (pageToLoad: number = 1, isSilent = false) => {
       if (!selectedLotId) return;
 
-      setIsLoadingLogs(true);
+      if (!isSilent) setIsLoadingLogs(true);
       try {
         const result = await securityApi.getMovementLogs({
           parkingLotId: selectedLotId,
@@ -168,11 +168,13 @@ export const SecurityMovementLogsPage: React.FC = () => {
         setTotalCount(result.pagination.totalCount);
         setCurrentPage(result.pagination.currentPage);
       } catch (err: any) {
-        toast.error('Failed to load vehicle movement history.', {
-          description: err.response?.data?.message || err.message,
-        });
+        if (!isSilent) {
+          toast.error('Failed to load vehicle movement history.', {
+            description: err.response?.data?.message || err.message,
+          });
+        }
       } finally {
-        setIsLoadingLogs(false);
+        if (!isSilent) setIsLoadingLogs(false);
       }
     },
     [selectedLotId, search, movementTypeFilter, staffFilter, startDate, endDate, pageSize],
@@ -186,6 +188,11 @@ export const SecurityMovementLogsPage: React.FC = () => {
     }, 250);
     return () => clearTimeout(timer);
   }, [fetchMovementLogs, selectedLotId]);
+
+  // Real-time silent background sync without ghost reload
+  useLiveSync(() => {
+    if (selectedLotId) void fetchMovementLogs(currentPage, true);
+  }, { enabled: Boolean(selectedLotId) });
 
   // 3. Fetch Single Log Details for Modal
   const handleOpenDetail = async (logId: string) => {
@@ -1114,16 +1121,6 @@ export const SecurityMovementLogsPage: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => fetchMovementLogs(currentPage)}
-                disabled={isLoadingLogs}
-                className="h-8 gap-1 text-xs text-muted-foreground hover:text-foreground"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingLogs ? 'animate-spin' : ''}`} />
-                <span>Refresh</span>
-              </Button>
               <span className="text-muted-foreground">
                 Showing <strong className="text-foreground">{logs.length}</strong> of {totalCount} records
               </span>

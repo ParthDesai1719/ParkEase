@@ -57,13 +57,67 @@ export interface SecurityDashboardStatsData {
   }>;
 }
 
+export interface ExitCashBreakdown {
+  extensionMinutes: number;
+  extensionAmount: number;
+  overstayMinutes: number;
+  overstayAmount: number;
+  totalCashCollected: number;
+}
+
+export interface ExitCashReceipt {
+  receiptNumber: string;
+  receiptDate: string;
+  parkingLotName: string;
+  parkingLotAddress: string;
+  bookingId: string;
+  bookingReference: string;
+  customerName: string;
+  customerPhone: string;
+  vehicleNumber: string;
+  vehicleType: string;
+  slotNumber: string;
+  scheduledEntryTime: string;
+  scheduledExitTime: string;
+  actualEntryTime?: string;
+  breakdown: ExitCashBreakdown;
+  paymentMethod: 'CASH';
+  staffName: string;
+  notes?: string;
+}
+
+export interface SettleExitCashResult {
+  success: boolean;
+  message: string;
+  bookingId: string;
+  bookingReference: string;
+  totalAmountCollected: number;
+  breakdown: ExitCashBreakdown;
+  receipt: ExitCashReceipt;
+  eligibleForExit: boolean;
+}
+
 export interface QrVerificationResult {
   isAuthentic: boolean;
   eligibleForEntry: boolean;
   entryIneligibilityReason: string | null;
   eligibleForExit: boolean;
   exitIneligibilityReason: string | null;
-  availableActions: Array<'ALLOW_ENTRY' | 'REJECT' | 'CANCEL' | 'VERIFY_EXIT' | 'COLLECT_OVERSTAY_CASH'>;
+  availableActions: Array<'ALLOW_ENTRY' | 'REJECT' | 'CANCEL' | 'VERIFY_EXIT' | 'COLLECT_OVERSTAY_CASH' | 'COLLECT_EXTENSION_CASH' | 'COLLECT_EXIT_CASH'>;
+  pendingCashExtension?: {
+    paymentId: string;
+    paymentReference: string;
+    amount: number;
+    durationMinutes?: number;
+    requestedAt?: string;
+  } | null;
+  exitCashDue?: {
+    totalCashDue: number;
+    extensionAmount: number;
+    extensionMinutes: number;
+    overstayAmount: number;
+    overstayMinutes: number;
+  };
   booking: {
     bookingId: string;
     bookingReference: string;
@@ -239,7 +293,52 @@ export interface ManualBookingItem {
     canCompleteExit: boolean;
     canRejectExit: boolean;
     canCollectCash: boolean;
+    canCollectExtensionCash?: boolean;
   };
+  pendingCashExtension?: {
+    paymentId: string;
+    paymentReference: string;
+    amount: number;
+    durationMinutes?: number;
+    requestedAt?: string;
+  } | null;
+}
+
+export interface ConfirmCashExtensionResult {
+  success: boolean;
+  message: string;
+  bookingId: string;
+  bookingReference: string;
+  paymentId: string;
+  paymentReference: string;
+  amount: number;
+  paymentStatus: 'SUCCESSFUL';
+  paymentMethod: 'CASH';
+}
+
+export interface WalkInExtensionQuoteResult {
+  eligible: boolean;
+  bookingId: string;
+  bookingReference: string;
+  currentExitTime: string;
+  proposedExitTime: string;
+  additionalMinutes: number;
+  extensionCharge: number;
+  ratePerHour: number;
+  reason?: string;
+}
+
+export interface ProcessWalkInExtensionResult {
+  success: boolean;
+  message: string;
+  receiptNumber: string;
+  bookingId: string;
+  bookingReference: string;
+  previousExitTime: string;
+  newExitTime: string;
+  additionalMinutes: number;
+  amountPaid: number;
+  paymentReference: string;
 }
 
 export interface ManualSearchBookingsResult {
@@ -350,6 +449,43 @@ export const securityApi = {
   }): Promise<CollectOverstayCashResult> => {
     const res = await apiClient.post<{ success: boolean; data: CollectOverstayCashResult }>(
       '/security/overstay/collect-cash',
+      payload,
+    );
+    return res.data.data;
+  },
+
+  settleExitCash: async (payload: {
+    parkingLotId: string;
+    bookingId: string;
+    notes?: string;
+  }): Promise<SettleExitCashResult> => {
+    const res = await apiClient.post<{ success: boolean; data: SettleExitCashResult }>(
+      '/security/exit-cash/settle',
+      payload,
+    );
+    return res.data.data;
+  },
+
+  confirmCashExtensionPayment: async (payload: {
+    parkingLotId: string;
+    bookingId: string;
+    paymentId?: string;
+    notes?: string;
+  }): Promise<ConfirmCashExtensionResult> => {
+    const res = await apiClient.post<{ success: boolean; data: ConfirmCashExtensionResult }>(
+      `/security/bookings/${encodeURIComponent(payload.bookingId)}/extension-cash/confirm`,
+      payload,
+    );
+    return res.data.data;
+  },
+
+  recordUnpaidCashExtension: async (payload: {
+    parkingLotId: string;
+    bookingId: string;
+    notes?: string;
+  }): Promise<{ success: boolean; message: string; incidentId?: string }> => {
+    const res = await apiClient.post<{ success: boolean; data: { success: boolean; message: string; incidentId?: string } }>(
+      `/security/bookings/${encodeURIComponent(payload.bookingId)}/extension-cash/record-unpaid`,
       payload,
     );
     return res.data.data;
@@ -470,6 +606,33 @@ export const securityApi = {
     return res.data.data;
   },
 
+  getWalkInExtensionQuote: async (params: {
+    parkingLotId: string;
+    bookingId: string;
+    additionalMinutes: number;
+  }): Promise<WalkInExtensionQuoteResult> => {
+    const res = await apiClient.get<{ success: boolean; data: WalkInExtensionQuoteResult }>(
+      `/security/walk-in/bookings/${encodeURIComponent(params.bookingId)}/extension-quote`,
+      { params },
+    );
+    return res.data.data;
+  },
+
+  processWalkInExtension: async (payload: {
+    parkingLotId: string;
+    bookingId: string;
+    additionalMinutes: number;
+    amountCollected: number;
+    confirmCashReceived: boolean;
+    notes?: string;
+  }): Promise<ProcessWalkInExtensionResult> => {
+    const res = await apiClient.post<{ success: boolean; data: ProcessWalkInExtensionResult }>(
+      `/security/walk-in/bookings/${encodeURIComponent(payload.bookingId)}/extend`,
+      payload,
+    );
+    return res.data.data;
+  },
+
   // Incident Reports APIs (Phase 6)
   getIncidents: async (params: {
     parkingLotId: string;
@@ -526,6 +689,21 @@ export const securityApi = {
   ): Promise<SecurityIncident> => {
     const res = await apiClient.patch<{ success: boolean; data: SecurityIncident }>(
       `/security/incidents/${incidentId}/status`,
+      payload,
+      {
+        params: { parkingLotId },
+      },
+    );
+    return res.data.data;
+  },
+
+  addIncidentResponse: async (
+    incidentId: string,
+    parkingLotId: string,
+    payload: { message: string; attachments?: string[] },
+  ): Promise<SecurityIncident> => {
+    const res = await apiClient.post<{ success: boolean; data: SecurityIncident }>(
+      `/security/incidents/${incidentId}/responses`,
       payload,
       {
         params: { parkingLotId },
@@ -646,6 +824,7 @@ export interface WalkInTariffResult {
   durationHours: number;
   hourlyRate: number;
   baseAmount: number;
+  platformBookingFee?: number;
   additionalCharges: number;
   totalAmount: number;
   scheduledEntryTime: string;
@@ -685,6 +864,7 @@ export interface WalkInBookingConfirmation {
     durationHours: number;
     durationMinutes: number;
     hourlyRate: number;
+    platformBookingFee?: number;
     totalAmount: number;
     gracePeriodMinutes: number;
     createdAt: string;
@@ -751,7 +931,7 @@ export interface SecurityIncident {
   incidentSource: string;
   incidentType: string;
   severity: 'Low' | 'Medium' | 'High' | 'Critical';
-  incidentStatus: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed';
+  incidentStatus: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed' | 'Pending' | 'Resolving' | string;
   title: string;
   description: string;
   attachments: string[];
@@ -759,6 +939,15 @@ export interface SecurityIncident {
   resolvedAt: string | null;
   resolutionNotes: string | null;
   closedAt: string | null;
+  responses?: Array<{
+    responseId: string;
+    authorId: string;
+    authorRole: string;
+    authorName: string;
+    message: string;
+    attachments: string[];
+    createdAt: string;
+  }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -794,7 +983,7 @@ export interface CreateIncidentPayload {
 }
 
 export interface UpdateIncidentStatusPayload {
-  status: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed';
+  status: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed' | 'Pending' | 'Resolving' | string;
   resolutionNotes?: string;
 }
 

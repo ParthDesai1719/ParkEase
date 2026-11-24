@@ -279,3 +279,27 @@ export async function activateFacilityHandler(
     next(error);
   }
 }
+
+/**
+ * PATCH /api/v1/admin/parking-lots/:id/overflow-config
+ * Updates the overflow capacity threshold
+ */
+export async function updateOverflowConfigHandler(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { id } = req.params as { id: string };
+    const { overflowCapacity } = req.body as { overflowCapacity: number };
+    const result = await ParkingLayoutService.updateOverflowConfig(
+      id,
+      Number(overflowCapacity),
+      req.userId!,
+      req.ip,
+    );
+    sendSuccess(res, result.message, result);
+  } catch (error) {
+    next(error);
+  }
+}

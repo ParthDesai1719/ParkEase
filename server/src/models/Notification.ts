@@ -39,6 +39,8 @@ const eventTypeValues = [
   'Manual Entry Approved',
   'Walk-in Booking Created',
   'Customer Registration Successful',
+  'Customer Account Suspended',
+  'Customer Account Reactivated',
   'Parking Owner Application Submitted',
   'Parking Owner Application Approved',
   'Parking Owner Application Rejected',

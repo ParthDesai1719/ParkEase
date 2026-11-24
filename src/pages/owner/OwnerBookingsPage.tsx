@@ -3,7 +3,6 @@ import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import {
   CalendarCheck,
   Search,
-  RefreshCw,
   Building2,
   Car,
   Clock,
@@ -28,6 +27,7 @@ import {
 } from '@/api/owner.api';
 import { getSocket } from '@/lib/socket';
 import { BookingConfirmationDialog } from '@/components/customer/booking/BookingConfirmationDialog';
+import { useLiveSync } from '@/hooks/useLiveSync';
 import type { VerifyBookingPaymentResponse } from '@/api/customerParking.api';
 
 import { Badge } from '@/components/ui/badge';
@@ -96,7 +96,7 @@ export const OwnerBookingsPage: React.FC = () => {
     totalRevenue: 0,
   });
   const [isLoadingBookings, setIsLoadingBookings] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [, setIsRefreshing] = useState(false);
 
   // Filters & Pagination
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -213,6 +213,10 @@ export const OwnerBookingsPage: React.FC = () => {
   useEffect(() => {
     fetchBookings();
   }, [fetchBookings]);
+
+  useLiveSync(() => {
+    void fetchBookings(true);
+  });
 
   // Socket.IO Real-Time Listener
   useEffect(() => {
@@ -453,17 +457,6 @@ export const OwnerBookingsPage: React.FC = () => {
               </Select>
             )}
           </div>
-
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fetchBookings(true)}
-            disabled={isRefreshing || isLoadingBookings}
-            className="gap-2"
-          >
-            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
         </div>
       </div>
 

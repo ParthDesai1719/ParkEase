@@ -86,6 +86,7 @@ export function emitSlotStatusUpdate(data: {
   slotId: string;
   slotNumber: string;
   slotStatus: string;
+  isOverflow?: boolean | undefined;
   remarks?: string | null | undefined;
   timestamp: string;
 }): void {
@@ -177,5 +178,18 @@ export function emitIncidentUpdate(data: {
   }
   ioInstance.to('admin_channel').emit('incident_updated', data);
   ioInstance.emit('incident_updated', data);
+}
+
+export function emitLiveVehicleUpdate(data: {
+  event: 'VEHICLE_ENTERED' | 'VEHICLE_EXITED' | 'OVERSTAY_DETECTED';
+  bookingId: string;
+  vehicleNumber: string;
+  parkingLotId: string;
+  timestamp: string;
+}): void {
+  if (!ioInstance) return;
+  ioInstance.to(`lot_${data.parkingLotId}`).emit('live_vehicle_update', data);
+  ioInstance.to('admin_channel').emit('live_vehicle_update', data);
+  ioInstance.emit('live_vehicle_update', data);
 }
 

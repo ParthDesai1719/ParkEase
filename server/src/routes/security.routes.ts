@@ -17,16 +17,24 @@ import {
   getWalkInAvailableSlots,
   calculateWalkInTariff,
   createWalkInBooking,
+  confirmCashExtensionPayment,
+  recordUnpaidCashExtension,
+  settleExitCash,
+  getWalkInExtensionQuote,
+  processWalkInExtension,
   getIncidents,
   getIncidentDetail,
   createIncident,
   updateIncidentStatus,
+  addIncidentResponse,
   uploadIncidentImages,
   getIncidentImageFile,
   getMovementLogs,
   getMovementLogDetail,
   exportMovementLogsCsv,
 } from '../controllers/security.controller.js';
+import { securityEmailerController } from '../controllers/securityEmailer.controller.js';
+import { securityLiveViewerController } from '../controllers/securityLiveViewer.controller.js';
 
 const router = Router();
 
@@ -76,6 +84,40 @@ router.post(
   requireRole('SECURITY', 'ADMIN'),
   requireActiveSecurityAssignment,
   collectOverstayCash,
+);
+
+// Unified Exit Cash Settlement (Extension Cash + Live Overstay Fees)
+router.post(
+  '/exit-cash/settle',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  requireActiveSecurityAssignment,
+  settleExitCash,
+);
+
+router.post(
+  '/bookings/:bookingId/settle-cash',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  requireActiveSecurityAssignment,
+  settleExitCash,
+);
+
+// Collect / confirm deferred cash payment for customer booking extension at exit
+router.post(
+  '/bookings/:bookingId/extension-cash/confirm',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  requireActiveSecurityAssignment,
+  confirmCashExtensionPayment,
+);
+
+router.post(
+  '/bookings/:bookingId/extension-cash/record-unpaid',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  requireActiveSecurityAssignment,
+  recordUnpaidCashExtension,
 );
 
 // Manual Vehicle Lookup & Verification Fallback Routes
@@ -144,6 +186,23 @@ router.post(
   createWalkInBooking,
 );
 
+// Walk-in Booking Extension Routes
+router.get(
+  '/walk-in/bookings/:bookingId/extension-quote',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  requireActiveSecurityAssignment,
+  getWalkInExtensionQuote,
+);
+
+router.post(
+  '/walk-in/bookings/:bookingId/extend',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  requireActiveSecurityAssignment,
+  processWalkInExtension,
+);
+
 // Incident Reports Routes (Phase 6)
 router.get(
   '/incidents',
@@ -191,6 +250,14 @@ router.patch(
   updateIncidentStatus,
 );
 
+router.post(
+  '/incidents/:id/responses',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  requireActiveSecurityAssignment,
+  addIncidentResponse,
+);
+
 // Vehicle Movement Logs Routes (Phase 5)
 router.get(
   '/movement-logs/export/csv',
@@ -214,6 +281,75 @@ router.get(
   requireRole('SECURITY', 'ADMIN'),
   requireActiveSecurityAssignment,
   getMovementLogDetail,
+);
+
+// ============================================================================
+// SECURITY EMAILER (DIRECT COMMUNICATION TO ASSIGNED PARKING OWNER)
+// ============================================================================
+router.get(
+  '/emailer/recipient-owner',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  (req, res, next) => {
+    securityEmailerController.getAssignedOwners(req, res).catch(next);
+  },
+);
+
+router.post(
+  '/emailer/send',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  (req, res, next) => {
+    securityEmailerController.sendEmailToOwner(req, res).catch(next);
+  },
+);
+
+router.get(
+  '/emailer/history',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  (req, res, next) => {
+    securityEmailerController.getHistory(req, res).catch(next);
+  },
+);
+
+// ============================================================================
+// SECURITY 2D LIVE PARKING LAYOUT VIEWER
+// ============================================================================
+router.get(
+  '/live-viewer/facilities',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  (req, res, next) => {
+    securityLiveViewerController.getAssignedFacilities(req, res).catch(next);
+  },
+);
+
+router.get(
+  '/live-viewer/layout',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  (req, res, next) => {
+    securityLiveViewerController.getLiveFloorLayout(req, res).catch(next);
+  },
+);
+
+router.get(
+  '/live-viewer/slot-details',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  (req, res, next) => {
+    securityLiveViewerController.getSlotDetails(req, res).catch(next);
+  },
+);
+
+router.patch(
+  '/live-viewer/slots/:slotId/status',
+  requireAuth,
+  requireRole('SECURITY', 'ADMIN'),
+  (req, res, next) => {
+    securityLiveViewerController.updateSlotStatus(req, res).catch(next);
+  },
 );
 
 export default router;

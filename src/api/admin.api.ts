@@ -67,8 +67,43 @@ export interface OwnerApplicationItem {
   adminRemarks?: string | null;
   rejectionReason?: string | null;
   submittedAt?: string | null;
+  facilitiesSummary?: {
+    totalLots: number;
+    activeLots: number;
+    suspendedLots: number;
+    pendingSubmissions: number;
+  };
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OwnerPaymentDetails {
+  _id: string;
+  paymentReference: string;
+  paymentType: string;
+  paymentTypeCode: string;
+  amount: number;
+  currency: string;
+  paymentMethod: string;
+  paymentStatus: string;
+  gatewayPaymentId: string | null;
+  gatewayOrderId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  applicationReference: string;
+  businessName: string;
+  ownerName: string;
+  ownerEmail: string;
+  ownerPhone: string;
+  ownerId?: string | null;
+}
+
+export interface OwnerFacilitiesSummary {
+  totalLots: number;
+  activeLots: number;
+  suspendedLots: number;
+  pendingSubmissions: number;
+  ownerUserId: string;
 }
 
 export interface PaginatedApplicationsResponse {
@@ -84,6 +119,10 @@ export interface GetApplicationsParams {
   search?: string;
   page?: number;
   limit?: number;
+  feeStatus?: string;
+  accountStatus?: string;
+  approvedFrom?: string;
+  approvedTo?: string;
 }
 
 export async function getDashboardOverview(): Promise<ApiResponse<DashboardOverviewMetrics>> {
@@ -139,6 +178,59 @@ export async function updateOwnerApplicationRemarks(
   const response = await apiClient.put<ApiResponse<OwnerApplicationItem>>(
     `/admin/owner-applications/${id}/remarks`,
     { remarks },
+  );
+  return response.data;
+}
+
+export async function getOwnerApplicationPayment(
+  id: string,
+): Promise<ApiResponse<OwnerPaymentDetails>> {
+  const response = await apiClient.get<ApiResponse<OwnerPaymentDetails>>(
+    `/admin/owner-applications/${id}/payment`,
+  );
+  return response.data;
+}
+
+export async function getOwnerFacilitiesSummary(
+  id: string,
+): Promise<ApiResponse<OwnerFacilitiesSummary>> {
+  const response = await apiClient.get<ApiResponse<OwnerFacilitiesSummary>>(
+    `/admin/owner-applications/${id}/facilities-summary`,
+  );
+  return response.data;
+}
+
+export async function suspendOwner(
+  id: string,
+  reason: string,
+): Promise<ApiResponse<unknown>> {
+  const response = await apiClient.post<ApiResponse<unknown>>(
+    `/admin/owner-applications/${id}/suspend`,
+    { reason },
+  );
+  return response.data;
+}
+
+export async function activateOwner(
+  id: string,
+  remarks?: string,
+): Promise<ApiResponse<unknown>> {
+  const response = await apiClient.post<ApiResponse<unknown>>(
+    `/admin/owner-applications/${id}/activate`,
+    { remarks },
+  );
+  return response.data;
+}
+
+export async function exportOwnerApplicationsCsv(
+  params?: GetApplicationsParams,
+): Promise<Blob> {
+  const response = await apiClient.get<Blob>(
+    '/admin/owner-applications/export/csv',
+    {
+      params,
+      responseType: 'blob',
+    },
   );
   return response.data;
 }
@@ -251,6 +343,7 @@ export interface PaginatedFacilitySubmissionsResponse {
 export interface GetAdminFacilitySubmissionsParams {
   status?: string;
   search?: string;
+  ownerId?: string;
   page?: number;
   limit?: number;
   sortBy?: string;

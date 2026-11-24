@@ -19,6 +19,7 @@ import {
   Clock,
   PlusCircle,
   Download,
+  Search,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -41,6 +42,9 @@ import {
   type WalkInAvailableSlotsResult,
   type WalkInTariffResult,
   type WalkInBookingConfirmation,
+  type WalkInExtensionQuoteResult,
+  type ProcessWalkInExtensionResult,
+  type ManualBookingItem,
 } from '@/api/security.api';
 
 const LOCAL_STORAGE_KEY = 'parkease_security_active_lot_id';
@@ -111,6 +115,24 @@ export const SecurityWalkInPage: React.FC = () => {
 
   // Success Confirmation State
   const [confirmedBooking, setConfirmedBooking] = useState<WalkInBookingConfirmation | null>(null);
+
+  // Walk-in Mode: Register or Extend
+  const [walkInMode, setWalkInMode] = useState<'REGISTER' | 'EXTEND'>('REGISTER');
+
+  // Extension Flow State
+  const [extSearchQuery, setExtSearchQuery] = useState('');
+  const [isSearchingActive, setIsSearchingActive] = useState(false);
+  const [activeWalkIns, setActiveWalkIns] = useState<ManualBookingItem[]>([]);
+  const [selectedExtBooking, setSelectedExtBooking] = useState<ManualBookingItem | null>(null);
+  const [extMinutes, setExtMinutes] = useState<number>(60);
+  const [isCustomExt, setIsCustomExt] = useState(false);
+  const [customExtInput, setCustomExtInput] = useState('60');
+  const [extQuote, setExtQuote] = useState<WalkInExtensionQuoteResult | null>(null);
+  const [isLoadingExtQuote, setIsLoadingExtQuote] = useState(false);
+  const [extCashConfirmed, setExtCashConfirmed] = useState(false);
+  const [staffExtNotes, setStaffExtNotes] = useState('');
+  const [isSubmittingExt, setIsSubmittingExt] = useState(false);
+  const [extResult, setExtResult] = useState<ProcessWalkInExtensionResult | null>(null);
 
   // Active facility detection & EV availability
   const activeFacility = facilities.find((f) => f.parkingLotId === selectedLotId);
@@ -312,7 +334,9 @@ export const SecurityWalkInPage: React.FC = () => {
       setConfirmedBooking(res);
       toast.success(`Booking ${res.booking.bookingReference} confirmed! Bay ${res.slot.slotNumber} reserved.`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to create walk-in booking';
+      const msg =
+        (err as any)?.response?.data?.message ||
+        (err instanceof Error ? err.message : 'Failed to create walk-in booking');
       toast.error(msg);
     } finally {
       setIsSubmitting(false);
@@ -732,6 +756,88 @@ export const SecurityWalkInPage: React.FC = () => {
     printWindow.document.close();
   };
 
+  const handleSearchActiveWalkIns = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!selectedLotId) return;
+
+    setIsSearchingActive(true);
+    try {
+      const res = await securityApi.searchManualBookings({
+        parkingLotId: selectedLotId,
+        query: extSearchQuery.trim() || undefined,
+        status: 'Active',
+      });
+      const walkIns = res.bookings.filter((b) => b.bookingType === 'WALK_IN');
+      setActiveWalkIns(walkIns);
+      if (walkIns.length === 0) {
+        toast.info('No active walk-in bookings found matching your search.');
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to search active walk-in bookings.');
+    } finally {
+      setIsSearchingActive(false);
+    }
+  };
+
+  const fetchExtensionQuote = async (bookingId: string, minutes: number) => {
+    if (!selectedLotId || minutes <= 0) return;
+    setIsLoadingExtQuote(true);
+    try {
+      const q = await securityApi.getWalkInExtensionQuote({
+        parkingLotId: selectedLotId,
+        bookingId,
+        additionalMinutes: minutes,
+      });
+      setExtQuote(q);
+      if (!q.eligible) {
+        toast.error(q.reason || 'This walk-in booking cannot be extended.');
+      }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || err.message || 'Failed to calculate extension quote.');
+      setExtQuote(null);
+    } finally {
+      setIsLoadingExtQuote(false);
+    }
+  };
+
+  const handleSelectBookingForExtension = (item: ManualBookingItem) => {
+    setSelectedExtBooking(item);
+    setExtCashConfirmed(false);
+    setStaffExtNotes('');
+    setExtMinutes(60);
+    setIsCustomExt(false);
+    setCustomExtInput('60');
+    fetchExtensionQuote(item.bookingId, 60);
+  };
+
+  const handleProcessWalkInExtension = async () => {
+    if (!selectedLotId || !selectedExtBooking || !extQuote || !extQuote.eligible) return;
+
+    if (!extCashConfirmed) {
+      toast.error('You must explicitly confirm physical cash collection.');
+      return;
+    }
+
+    setIsSubmittingExt(true);
+    try {
+      const res = await securityApi.processWalkInExtension({
+        parkingLotId: selectedLotId,
+        bookingId: selectedExtBooking.bookingId,
+        additionalMinutes: extMinutes,
+        amountCollected: extQuote.extensionCharge,
+        confirmCashReceived: true,
+        notes: staffExtNotes.trim() || undefined,
+      });
+
+      setExtResult(res);
+      toast.success(res.message || 'Walk-in extension completed successfully!');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || err.message || 'Failed to extend walk-in booking.');
+    } finally {
+      setIsSubmittingExt(false);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8 space-y-6">
       {/* 1. Header & Terminal Navigation */}
@@ -797,8 +903,45 @@ export const SecurityWalkInPage: React.FC = () => {
         </div>
       </div>
 
-      {/* 2. SUCCESS CONFIRMATION & RECEIPT VIEW */}
-      {confirmedBooking ? (
+      {/* Mode Switcher */}
+      <div className="flex items-center gap-2 border-b border-border/80 pb-3">
+        <button
+          type="button"
+          onClick={() => {
+            setWalkInMode('REGISTER');
+            setExtResult(null);
+          }}
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-2 ${
+            walkInMode === 'REGISTER'
+              ? 'bg-primary text-primary-foreground shadow-sm'
+              : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <UserPlus className="w-3.5 h-3.5" />
+          <span>New Walk-in Registration</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setWalkInMode('EXTEND');
+            setConfirmedBooking(null);
+          }}
+          className={`px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-2 ${
+            walkInMode === 'EXTEND'
+              ? 'bg-primary text-primary-foreground shadow-sm'
+              : 'bg-muted/40 text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          <Clock className="w-3.5 h-3.5" />
+          <span>Process Walk-in Extension</span>
+        </button>
+      </div>
+
+      {walkInMode === 'REGISTER' && (
+        <>
+          {/* 2. SUCCESS CONFIRMATION & RECEIPT VIEW */}
+          {confirmedBooking ? (
         <div className="space-y-6">
           <Card className="border-emerald-500/40 bg-emerald-500/10 shadow-lg overflow-hidden">
             <CardContent className="p-6 sm:p-8">
@@ -810,17 +953,17 @@ export const SecurityWalkInPage: React.FC = () => {
                   <div className="space-y-1 text-center md:text-left">
                     <div className="flex flex-wrap items-center justify-center md:justify-start gap-2">
                       <Badge className="bg-emerald-600 text-white font-bold text-xs uppercase px-2.5 py-0.5">
-                        Vehicle Checked In & Bay Occupied
+                        Walk-in Booked & Bay Reserved
                       </Badge>
                       <Badge variant="outline" className="border-emerald-500/30 text-emerald-600 dark:text-emerald-400 font-mono text-xs">
                         {confirmedBooking.receiptNumber}
                       </Badge>
                     </div>
                     <h2 className="text-2xl font-black text-foreground tracking-tight">
-                      Bay {confirmedBooking.slot.slotNumber} Occupied &bull; {confirmedBooking.vehicle.vehicleNumber}
+                      Bay {confirmedBooking.slot.slotNumber} Reserved &bull; {confirmedBooking.vehicle.vehicleNumber}
                     </h2>
                     <p className="text-xs text-muted-foreground">
-                      Physical cash payment of <strong className="text-foreground font-bold">₹{confirmedBooking.payment.amount}</strong> was confirmed. Vehicle is directly checked in as Active and barrier cleared.
+                      Physical cash payment of <strong className="text-foreground font-bold">₹{confirmedBooking.payment.amount}</strong> was confirmed. Customer must scan the QR at the entry gate, then at the bay barrier to occupy the bay.
                     </p>
                   </div>
                 </div>
@@ -929,7 +1072,7 @@ export const SecurityWalkInPage: React.FC = () => {
                   <div className="p-3 rounded-lg border border-emerald-500/20 bg-emerald-500/10 text-[11px] text-emerald-600 dark:text-emerald-400 flex items-start gap-2">
                     <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
                     <span>
-                      Notice: Bay status is <strong>OCCUPIED</strong> and vehicle is checked in directly. Customer retains this QR pass for exit gate clearance.
+                      Notice: Bay status is <strong>RESERVED</strong>. Customer must scan this QR at the entry gate and then at the bay barrier; keep it for exit clearance.
                     </span>
                   </div>
                 </div>
@@ -1343,6 +1486,12 @@ export const SecurityWalkInPage: React.FC = () => {
                     <span>Exit Grace Period:</span>
                     <strong className="text-foreground">{tariff?.gracePeriodMinutes ?? 15} mins</strong>
                   </div>
+                  {tariff && typeof tariff.platformBookingFee === 'number' && tariff.platformBookingFee > 0 && (
+                    <div className="flex justify-between items-center text-primary font-bold">
+                      <span>Platform Booking Fee:</span>
+                      <strong>₹{tariff.platformBookingFee}</strong>
+                    </div>
+                  )}
                 </div>
 
                 {/* Mandatory Cash Confirmation Checkbox */}
@@ -1387,6 +1536,334 @@ export const SecurityWalkInPage: React.FC = () => {
             </Card>
           </div>
         </form>
+      )}
+        </>
+      )}
+
+      {walkInMode === 'EXTEND' && (
+        <>
+          {extResult ? (
+            <Card className="border-emerald-500/40 bg-emerald-500/10 shadow-lg overflow-hidden">
+              <CardContent className="p-6 sm:p-8 space-y-6">
+                <div className="flex items-start gap-4">
+                  <div className="w-14 h-14 rounded-2xl bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-md">
+                    <CheckCircle2 className="w-8 h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Badge className="bg-emerald-600 text-white font-bold text-xs uppercase px-2.5 py-0.5">
+                        Walk-in Extension Confirmed
+                      </Badge>
+                      <span className="font-mono text-xs text-muted-foreground">
+                        Receipt: {extResult.receiptNumber}
+                      </span>
+                    </div>
+                    <h2 className="text-xl sm:text-2xl font-black text-foreground tracking-tight">
+                      Session Extended by {extResult.additionalMinutes} Minutes
+                    </h2>
+                    <p className="text-xs text-muted-foreground">
+                      Booking Reference: <strong className="text-foreground font-mono">{extResult.bookingReference}</strong>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 rounded-xl bg-background/80 border border-emerald-500/30 text-xs">
+                  <div>
+                    <span className="text-muted-foreground">Previous Exit Time</span>
+                    <p className="font-bold text-foreground font-mono mt-0.5">
+                      {new Date(extResult.previousExitTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">New Authorized Exit Time</span>
+                    <p className="font-bold text-emerald-600 dark:text-emerald-400 font-mono mt-0.5">
+                      {new Date(extResult.newExitTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Cash Collected</span>
+                    <p className="font-bold text-foreground font-mono mt-0.5">
+                      ₹{extResult.amountPaid.toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-3 pt-2">
+                  <Button
+                    onClick={() => {
+                      setExtResult(null);
+                      setSelectedExtBooking(null);
+                      setExtQuote(null);
+                      setActiveWalkIns([]);
+                      setExtSearchQuery('');
+                    }}
+                    variant="outline"
+                    className="gap-2 text-xs"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    <span>Process Another Extension</span>
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-6">
+              {/* Search Active Walk-in Bookings */}
+              <Card className="border-border/80 shadow-sm">
+                <CardHeader className="pb-3 border-b border-border/80">
+                  <CardTitle className="text-base font-bold text-foreground flex items-center gap-2">
+                    <Search className="w-4 h-4 text-primary" />
+                    <span>Find Active Walk-in Booking</span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-4 sm:p-6 space-y-4">
+                  <form onSubmit={handleSearchActiveWalkIns} className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <Input
+                        value={extSearchQuery}
+                        onChange={(e) => setExtSearchQuery(e.target.value)}
+                        placeholder="Search by Vehicle Number (e.g. GJ01AB1234) or Booking Reference..."
+                        className="pl-9 h-10 text-xs sm:text-sm bg-background"
+                      />
+                    </div>
+                    <Button
+                      type="submit"
+                      disabled={isSearchingActive}
+                      className="h-10 px-5 text-xs font-semibold gap-2 shrink-0 cursor-pointer"
+                    >
+                      {isSearchingActive ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                      Find Booking
+                    </Button>
+                  </form>
+
+                  {/* Matching Walk-in Bookings */}
+                  {activeWalkIns.length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-border/60">
+                      <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                        Active Walk-in Vehicles ({activeWalkIns.length})
+                      </p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {activeWalkIns.map((item) => {
+                          const isSelected = selectedExtBooking?.bookingId === item.bookingId;
+                          return (
+                            <div
+                              key={item.bookingId}
+                              onClick={() => handleSelectBookingForExtension(item)}
+                              className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'border-primary bg-primary/5 ring-1 ring-primary'
+                                  : 'border-border/80 bg-card hover:bg-muted/40'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between mb-1.5">
+                                <span className="font-mono font-bold text-sm text-foreground">
+                                  {item.vehicle.vehicleNumber}
+                                </span>
+                                <Badge className="bg-emerald-600 text-white text-[10px]">
+                                  Bay {item.facility.slotNumber}
+                                </Badge>
+                              </div>
+                              <div className="text-xs text-muted-foreground space-y-0.5">
+                                <p>Ref: <span className="font-mono text-foreground">{item.bookingReference}</span></p>
+                                <p>Driver: <span className="text-foreground">{item.customer.fullName} ({item.customer.mobileNumber || 'N/A'})</span></p>
+                                <p>Scheduled Exit: <span className="font-mono text-foreground font-semibold">{new Date(item.timing.scheduledExitTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Extension Quote & Cash Collection Form */}
+              {selectedExtBooking && (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="lg:col-span-2 space-y-6">
+                    <Card className="border-border/80 shadow-sm">
+                      <CardHeader className="pb-3 border-b border-border/80">
+                        <CardTitle className="text-base font-bold text-foreground flex items-center gap-2">
+                          <Clock className="w-4 h-4 text-primary" />
+                          <span>Select Extension Duration</span>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="p-4 sm:p-6 space-y-4">
+                        <div className="grid grid-cols-4 gap-2">
+                          {[30, 60, 120, 180].map((mins) => {
+                            const isSel = !isCustomExt && extMinutes === mins;
+                            return (
+                              <button
+                                key={mins}
+                                type="button"
+                                onClick={() => {
+                                  setIsCustomExt(false);
+                                  setExtMinutes(mins);
+                                  setCustomExtInput(mins.toString());
+                                  fetchExtensionQuote(selectedExtBooking.bookingId, mins);
+                                }}
+                                className={`h-10 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                                  isSel
+                                    ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                                    : 'bg-background hover:bg-muted/60 border-border text-foreground'
+                                }`}
+                              >
+                                {mins < 60 ? `${mins} Mins` : `${mins / 60} Hour${mins > 60 ? 's' : ''}`}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex items-center gap-2 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setIsCustomExt(true)}
+                            className={`text-xs px-3 py-1.5 rounded-md border font-medium cursor-pointer ${
+                              isCustomExt
+                                ? 'border-primary text-primary bg-primary/5'
+                                : 'border-border text-muted-foreground hover:text-foreground'
+                            }`}
+                          >
+                            Custom Minutes:
+                          </button>
+                          {isCustomExt && (
+                            <div className="flex items-center gap-2">
+                              <Input
+                                type="number"
+                                min={15}
+                                max={720}
+                                step={15}
+                                value={customExtInput}
+                                onChange={(e) => {
+                                  const val = e.target.value.replace(/\D/g, '');
+                                  setCustomExtInput(val);
+                                  const num = parseInt(val, 10);
+                                  if (!isNaN(num) && num >= 15 && num <= 720) {
+                                    setExtMinutes(num);
+                                    fetchExtensionQuote(selectedExtBooking.bookingId, num);
+                                  }
+                                }}
+                                className="w-28 h-8 text-xs font-mono"
+                              />
+                              <span className="text-xs text-muted-foreground">mins</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Staff Notes */}
+                        <div className="space-y-1.5 pt-2">
+                          <Label className="text-xs font-medium text-foreground">
+                            Security Staff Notes (Optional)
+                          </Label>
+                          <Input
+                            value={staffExtNotes}
+                            onChange={(e) => setStaffExtNotes(e.target.value)}
+                            placeholder="e.g. Customer extended at gate desk; cash verified."
+                            className="h-9 text-xs"
+                          />
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Summary & Cash Confirmation Card */}
+                  <div className="space-y-6">
+                    <Card className="border-border/80 shadow-md">
+                      <CardHeader className="pb-3 border-b border-border/80 bg-muted/20">
+                        <CardTitle className="text-sm font-bold text-foreground">
+                          Extension Tariff & Cash Confirmation
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="p-4 space-y-4">
+                        {isLoadingExtQuote ? (
+                          <div className="flex items-center justify-center py-6 gap-2 text-xs text-muted-foreground">
+                            <RefreshCw className="w-4 h-4 animate-spin text-primary" />
+                            Calculating tariff...
+                          </div>
+                        ) : extQuote ? (
+                          <>
+                            <div className="space-y-2 text-xs">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Current Exit:</span>
+                                <span className="font-mono font-medium text-foreground">
+                                  {new Date(extQuote.currentExitTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Proposed New Exit:</span>
+                                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                                  {new Date(extQuote.proposedExitTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Hourly Rate:</span>
+                                <span className="font-mono font-medium text-foreground">
+                                  ₹{extQuote.ratePerHour}/hr
+                                </span>
+                              </div>
+                              <div className="pt-2 border-t border-border/60 flex justify-between items-center">
+                                <span className="font-bold text-foreground">Extension Cash Due:</span>
+                                <span className="text-lg font-black text-primary font-mono">
+                                  ₹{extQuote.extensionCharge.toFixed(2)}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Cash Confirmation Checkbox */}
+                            <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 space-y-2">
+                              <div className="flex items-start gap-2">
+                                <input
+                                  type="checkbox"
+                                  id="extCashConfirmCheck"
+                                  checked={extCashConfirmed}
+                                  onChange={(e) => setExtCashConfirmed(e.target.checked)}
+                                  className="mt-0.5 rounded border-amber-500 text-amber-600 focus:ring-amber-500 h-4 w-4 cursor-pointer"
+                                />
+                                <label
+                                  htmlFor="extCashConfirmCheck"
+                                  className="text-xs text-foreground leading-snug cursor-pointer font-medium select-none"
+                                >
+                                  I physically collected{' '}
+                                  <strong className="text-emerald-600 font-bold">
+                                    ₹{extQuote.extensionCharge.toFixed(2)} in CASH
+                                  </strong>{' '}
+                                  from the customer.
+                                </label>
+                              </div>
+                            </div>
+
+                            <Button
+                              onClick={handleProcessWalkInExtension}
+                              disabled={!extCashConfirmed || isSubmittingExt || !extQuote.eligible}
+                              className="w-full h-11 text-xs font-bold gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-md disabled:opacity-50 cursor-pointer"
+                            >
+                              {isSubmittingExt ? (
+                                <>
+                                  <RefreshCw className="w-4 h-4 animate-spin" />
+                                  <span>Confirming Extension...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <CheckCircle2 className="w-4 h-4" />
+                                  <span>Confirm Cash & Extend Bay</span>
+                                </>
+                              )}
+                            </Button>
+                          </>
+                        ) : (
+                          <p className="text-xs text-muted-foreground py-4 text-center">
+                            Select a walk-in booking above to view tariff.
+                          </p>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

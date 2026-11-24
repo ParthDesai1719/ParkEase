@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   MapPin,
@@ -11,17 +11,22 @@ import {
   ArrowRight,
   ShieldCheck,
   CheckCircle2,
+  Heart,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   type CustomerParkingLotResult,
   getFacilityImageUrl,
+  toggleFacilityFavourite,
 } from '@/api/customerParking.api';
 
 interface ParkingResultCardProps {
   parkingLot: CustomerParkingLotResult;
   isSelected?: boolean;
+  isFavourite?: boolean;
+  onToggleFavourite?: (parkingLotId: string, isFav: boolean) => void;
   onSelect?: (lot: CustomerParkingLotResult) => void;
   onHover?: (lot: CustomerParkingLotResult | null) => void;
 }
@@ -29,6 +34,8 @@ interface ParkingResultCardProps {
 export const ParkingResultCard: React.FC<ParkingResultCardProps> = ({
   parkingLot,
   isSelected = false,
+  isFavourite = false,
+  onToggleFavourite,
   onSelect,
   onHover,
 }) => {
@@ -52,6 +59,40 @@ export const ParkingResultCard: React.FC<ParkingResultCardProps> = ({
   } = parkingLot;
 
   const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
+  const [isFav, setIsFav] = useState(isFavourite);
+  const [isFavLoading, setIsFavLoading] = useState(false);
+
+  useEffect(() => {
+    setIsFav(isFavourite);
+  }, [isFavourite]);
+
+  const handleToggleFavourite = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (isFavLoading) return;
+
+    const previousState = isFav;
+    const optimisticState = !previousState;
+    setIsFav(optimisticState);
+    setIsFavLoading(true);
+
+    try {
+      const serverResult = await toggleFacilityFavourite(_id);
+      setIsFav(serverResult);
+      onToggleFavourite?.(_id, serverResult);
+      if (serverResult) {
+        toast.success(`Saved "${parkingName}" to favourite locations!`);
+      } else {
+        toast.info(`Removed "${parkingName}" from favourite locations.`);
+      }
+    } catch (err: unknown) {
+      setIsFav(previousState);
+      const msg = err instanceof Error ? err.message : 'Failed to update favourite location.';
+      toast.error(msg);
+    } finally {
+      setIsFavLoading(false);
+    }
+  };
 
   const rawImage = parkingImages && parkingImages.length > 0 ? parkingImages[0] : null;
   const resolvedImageUrl = rawImage ? getFacilityImageUrl(rawImage) : null;
@@ -103,6 +144,26 @@ export const ParkingResultCard: React.FC<ParkingResultCardProps> = ({
               <span className="text-[10px] text-muted-foreground font-normal">/hr</span>
             </span>
           </div>
+
+          {/* Floating Save / Favourite Heart Button */}
+          <button
+            type="button"
+            onClick={handleToggleFavourite}
+            disabled={isFavLoading}
+            className={`absolute top-3 right-3 z-10 w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 backdrop-blur-md shadow-sm border cursor-pointer ${
+              isFav
+                ? 'bg-rose-500 text-white border-rose-500 hover:bg-rose-600 shadow-rose-500/25 scale-105'
+                : 'bg-background/85 text-muted-foreground border-border/80 hover:text-rose-500 hover:bg-background hover:scale-105'
+            }`}
+            title={isFav ? 'Remove from Favourites' : 'Save to Favourites'}
+            aria-label={isFav ? 'Remove from Favourites' : 'Save to Favourites'}
+          >
+            <Heart
+              className={`h-4 w-4 transition-transform active:scale-75 ${
+                isFav ? 'fill-white text-white' : ''
+              }`}
+            />
+          </button>
 
           {/* Floating Operational Status Pill */}
           <div className="absolute bottom-3 left-3">

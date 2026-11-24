@@ -9,6 +9,7 @@ import {
   publishDraftLayout,
   replicateLaneNetwork,
   updateFacilityCanvasBoundary,
+  updateOverflowConfig,
   type LayoutElementData,
   type LayoutCanvasConfig,
   type OfficialParkingLotHierarchy,
@@ -158,11 +159,12 @@ export const ParkingLayoutDesignerPage: React.FC = () => {
   const [publishModalOpen, setPublishModalOpen] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [propDefaultsModalOpen, setPropDefaultsModalOpen] = useState<boolean>(false);
-  const [inspectorTab, setInspectorTab] = useState<'properties' | 'settings'>('properties');
+  const [inspectorTab, setInspectorTab] = useState<'properties' | 'settings' | 'overflow'>('properties');
   const [inspectorCollapsed, setInspectorCollapsed] = useState<boolean>(false);
   const [clipboardElement, setClipboardElement] = useState<LayoutElementData | null>(null);
   const [isAutoSaving, setIsAutoSaving] = useState<boolean>(false);
   const [highlightedElementId, setHighlightedElementId] = useState<string | null>(null);
+  const [isUpdatingOverflow, setIsUpdatingOverflow] = useState<boolean>(false);
 
   // Undo / Redo History Stack (Ctrl+Z / Ctrl+Y)
   const historyRef = useRef<Array<{ elements: LayoutElementData[]; canvasConfig: LayoutCanvasConfig }>>([]);
@@ -1855,6 +1857,33 @@ export const ParkingLayoutDesignerPage: React.FC = () => {
     }
   };
 
+  const handleUpdateOverflowCapacity = async (newCapacity: number) => {
+    if (!parkingLotId) return;
+    try {
+      setIsUpdatingOverflow(true);
+      const res = await updateOverflowConfig(parkingLotId, Number(newCapacity));
+      const resData = res.data;
+      if (res.success && resData) {
+        toast.success(res.message || 'Overflow capacity threshold updated.');
+        setHierarchy((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            parkingLot: {
+              ...prev.parkingLot,
+              overflowCapacity: resData.overflowCapacity,
+              overflowSlotCount: resData.overflowSlotCount,
+            },
+          };
+        });
+      }
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || err.message || 'Failed to update overflow capacity.');
+    } finally {
+      setIsUpdatingOverflow(false);
+    }
+  };
+
   // Compute stats for property inspector
   const floorStats = useMemo(() => {
     const placedSlots = elements.filter((el) => el.elementType === 'ParkingSlot').length;
@@ -2045,6 +2074,11 @@ export const ParkingLayoutDesignerPage: React.FC = () => {
             onSavePropDefaults={handleSavePropDefaults}
             activeInspectorTab={inspectorTab}
             onInspectorTabChange={setInspectorTab}
+            overflowCapacity={hierarchy?.parkingLot?.overflowCapacity ?? 0}
+            overflowSlotCount={hierarchy?.parkingLot?.overflowSlotCount ?? 0}
+            totalLotSlots={hierarchy?.parkingLot?.totalSlots ?? 0}
+            onUpdateOverflowCapacity={handleUpdateOverflowCapacity}
+            isUpdatingOverflow={isUpdatingOverflow}
             onOpenExpandedModal={() => setPropDefaultsModalOpen(true)}
             placedElementsCount={elements.length}
             isCollapsed={inspectorCollapsed}

@@ -206,6 +206,29 @@ export const CustomerBookingPage: React.FC = () => {
   );
   const [confirmationDialogOpen, setConfirmationDialogOpen] = useState<boolean>(false);
 
+  // Live 1-second ticker for slot availability countdowns
+  const [, setLiveTicker] = useState<number>(0);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setLiveTicker((t) => t + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const getAvailabilityCountdown = (targetIso?: string | null): string => {
+    if (!targetIso) return 'Checking availability';
+    const targetMs = new Date(targetIso).getTime();
+    const diffSec = Math.floor((targetMs - Date.now()) / 1000);
+    if (diffSec <= 0) return 'Available soon';
+    const hours = Math.floor(diffSec / 3600);
+    const minutes = Math.floor((diffSec % 3600) / 60);
+    const seconds = diffSec % 60;
+    if (hours > 0) {
+      return `Available in ${hours}h ${minutes}m ${seconds < 10 ? '0' : ''}${seconds}s`;
+    }
+    return `Available in ${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+  };
+
   // Load Razorpay Checkout SDK
   useEffect(() => {
     if (!window.Razorpay) {
@@ -275,7 +298,12 @@ export const CustomerBookingPage: React.FC = () => {
 
   // Fetch Booking Context (Layout + Slot Eligibility + Price Breakdown)
   const fetchContext = useCallback(
-    async (opts?: { isInitial?: boolean; targetFloorId?: string }) => {
+    async (opts?: {
+      isInitial?: boolean;
+      targetFloorId?: string;
+      clearSelectedSlot?: boolean;
+      suppressSlotWarning?: boolean;
+    }) => {
       if (!parkingLotId) return;
 
       const entryDate = new Date(entryTimeStr);
@@ -323,8 +351,10 @@ export const CustomerBookingPage: React.FC = () => {
           }
         }
 
-        // Verify if currently selected slot is still eligible
-        if (selectedSlotId) {
+        // Verify if currently selected slot is still eligible (suppressed on successful booking confirmation)
+        if (opts?.clearSelectedSlot) {
+          setSelectedSlotId(null);
+        } else if (selectedSlotId && !opts?.suppressSlotWarning) {
           const updatedSlot = data.activeFloor.slots.find((s) => s._id === selectedSlotId);
           if (!updatedSlot || !updatedSlot.isEligible) {
             setSelectedSlotId(null);
@@ -393,10 +423,21 @@ export const CustomerBookingPage: React.FC = () => {
     if (compatibleCustomerVehicles.some((v) => v._id === selectedVehicleId)) {
       return selectedVehicleId;
     }
+    // Prefer free vehicle without an active booking
+    const freeDefault = compatibleCustomerVehicles.find((v) => v.isDefault && !v.hasActiveBooking);
+    if (freeDefault) return freeDefault._id;
+    const freeFirst = compatibleCustomerVehicles.find((v) => !v.hasActiveBooking);
+    if (freeFirst) return freeFirst._id;
+
     const def =
       compatibleCustomerVehicles.find((v) => v.isDefault) || compatibleCustomerVehicles[0]!;
     return def._id;
   }, [compatibleCustomerVehicles, selectedVehicleId]);
+
+  // Currently selected vehicle record
+  const selectedVehicleRecord = useMemo(() => {
+    return compatibleCustomerVehicles.find((v) => v._id === effectiveSelectedVehicleId) || null;
+  }, [compatibleCustomerVehicles, effectiveSelectedVehicleId]);
 
   // Currently selected slot object
   const selectedSlotInfo: CustomerBookingSlotInfo | null = useMemo(() => {
@@ -435,6 +476,13 @@ export const CustomerBookingPage: React.FC = () => {
 
       if (!slotInfo) {
         toast.error('This bay is not linked to an active slot record.');
+        return;
+      }
+
+      if (slotInfo.isOverflow) {
+        toast.error(
+          `Slot ${slotInfo.slotNumber} is designated as an Overflow bay and is frozen for customer bookings. Overflow bays cannot be booked online and are strictly reserved for automatic system overstay reassignments and security staff.`,
+        );
         return;
       }
 
@@ -497,7 +545,7 @@ export const CustomerBookingPage: React.FC = () => {
         vehicleBrand: newVehicleBrand.trim(),
         vehicleModel: newVehicleModel.trim(),
       });
-      setVehicles((prev) => [created, ...prev]);
+      setVehicles((prev) => [created, ...prev.filter((v) => v._id !== created._id)]);
       setSelectedVehicleType(created.vehicleType);
       setSelectedVehicleId(created._id);
       setAddVehicleDialogOpen(false);
@@ -523,6 +571,12 @@ export const CustomerBookingPage: React.FC = () => {
       toast.error('Please select or register a compatible vehicle before booking.');
       setNewVehicleType(selectedVehicleType);
       setAddVehicleDialogOpen(true);
+      return;
+    }
+    if (selectedVehicleRecord?.hasActiveBooking) {
+      toast.error(
+        `${selectedVehicleRecord.vehicleNumber} has an active booking (${selectedVehicleRecord.activeBookingReference || 'Active'}). Only one active booking is permitted per vehicle. Please complete or exit the existing booking before booking another slot.`,
+      );
       return;
     }
 
@@ -575,16 +629,17 @@ export const CustomerBookingPage: React.FC = () => {
             });
 
             if (verification.bookingStatus === 'Confirmed') {
+              setSelectedSlotId(null);
               setConfirmedBooking(verification);
               setConfirmationDialogOpen(true);
               toast.success(`Booking ${verification.bookingReference} confirmed!`);
-              void fetchContext();
+              void fetchContext({ clearSelectedSlot: true, suppressSlotWarning: true });
             } else {
               // Concurrent slot conflict resulted in automatic refund
+              setSelectedSlotId(null);
               setPaymentBannerError(verification.message);
               toast.error(verification.message, { duration: 7000 });
-              setSelectedSlotId(null);
-              void fetchContext();
+              void fetchContext({ clearSelectedSlot: true, suppressSlotWarning: true });
             }
           } catch (vErr: unknown) {
             const errMsg = extractApiErrorMessage(
@@ -903,6 +958,40 @@ export const CustomerBookingPage: React.FC = () => {
             </div>
           </div>
 
+          {/* ACTIVE VEHICLE BOOKING ALERT AREA */}
+          {selectedVehicleRecord?.hasActiveBooking && (
+            <div
+              className="rounded-xl border-2 border-amber-500/50 bg-amber-500/10 p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950 dark:text-amber-200 shadow-xs animate-in fade-in-50"
+              data-testid="vehicle-active-booking-alert"
+            >
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
+                  <AlertCircle className="h-5 w-5" />
+                </div>
+                <div className="space-y-1">
+                  <p className="font-bold text-sm text-amber-900 dark:text-amber-300">
+                    <span className="font-mono">{selectedVehicleRecord.vehicleNumber}</span> has an active booking ({selectedVehicleRecord.activeBookingReference || 'Active'}).
+                  </p>
+                  <p className="text-xs text-amber-800/90 dark:text-amber-300/90 leading-relaxed">
+                    Only one active booking is permitted per vehicle. Please complete or exit the existing booking before booking another slot.
+                  </p>
+                </div>
+              </div>
+
+              {selectedVehicleRecord.activeBookingId && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs font-semibold shrink-0 border-amber-500/40 bg-amber-500/15 text-amber-900 dark:text-amber-200 hover:bg-amber-500/30"
+                  onClick={() => navigate(`/customer/booking/${selectedVehicleRecord.activeBookingId}`)}
+                >
+                  View Existing Booking &rarr;
+                </Button>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
             {/* Vehicle Type Selector (4 cols) */}
             <div className="md:col-span-4 space-y-1.5">
@@ -992,18 +1081,25 @@ export const CustomerBookingPage: React.FC = () => {
               {isLoadingVehicles ? (
                 <Skeleton className="h-10 w-full rounded-lg" />
               ) : compatibleCustomerVehicles.length > 0 ? (
-                <select
-                  id="vehicle-select"
-                  value={effectiveSelectedVehicleId}
-                  onChange={(e) => setSelectedVehicleId(e.target.value)}
-                  className="w-full h-10 rounded-lg border border-input bg-background px-3 text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
-                >
-                  {compatibleCustomerVehicles.map((v) => (
-                    <option key={v._id} value={v._id}>
-                      {v.vehicleNumber} — {v.vehicleBrand} {v.vehicleModel}
-                    </option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    id="vehicle-select"
+                    value={effectiveSelectedVehicleId}
+                    onChange={(e) => setSelectedVehicleId(e.target.value)}
+                    className={`w-full h-10 rounded-lg border bg-background px-3 text-xs font-semibold focus:outline-none focus:ring-2 ${
+                      selectedVehicleRecord?.hasActiveBooking
+                        ? 'border-amber-500/60 text-amber-500 focus:ring-amber-500/30'
+                        : 'border-input text-foreground focus:ring-primary/30'
+                    }`}
+                  >
+                    {compatibleCustomerVehicles.map((v) => (
+                      <option key={v._id} value={v._id}>
+                        {v.vehicleNumber} — {v.vehicleBrand} {v.vehicleModel}
+                        {v.hasActiveBooking ? ` (⚠️ Active Booking: ${v.activeBookingReference || v.activeBookingStatus})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </>
               ) : (
                 <Button
                   type="button"
@@ -1252,6 +1348,12 @@ export const CustomerBookingPage: React.FC = () => {
                       Maintenance / Other Vehicle
                     </span>
                   </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="h-3 w-3 rounded-xs bg-slate-500/25 border border-slate-400 border-dashed inline-block" />
+                    <span className="text-[11px] font-medium text-slate-400">
+                      Overflow (Frozen)
+                    </span>
+                  </div>
                 </div>
 
                 <button
@@ -1347,10 +1449,31 @@ export const CustomerBookingPage: React.FC = () => {
                   </div>
                 ) : inspectedElement && inspectedElement.elementType === 'ParkingSlot' ? (
                   <div className="absolute bottom-3 left-3 right-3 sm:right-auto sm:max-w-md bg-slate-900/95 backdrop-blur-md border border-slate-700 text-white rounded-xl p-3 shadow-lg flex items-center justify-between gap-3 z-10">
-                    <div className="space-y-0.5 text-xs">
-                      <p className="font-bold text-slate-200">
-                        Slot {inspectedElement.slotNumber} — {inspectedElement.effectiveStatus}
-                      </p>
+                    <div className="space-y-1 text-xs">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-bold text-slate-200">
+                          Slot {inspectedElement.slotNumber} — {inspectedElement.effectiveStatus}
+                        </p>
+                        {inspectedElement.expectedAvailableAt &&
+                          (inspectedElement.effectiveStatus === 'Occupied' ||
+                            inspectedElement.effectiveStatus === 'Reserved') && (
+                            <Badge className="bg-amber-500/20 text-amber-300 border-amber-500/40 text-[10px] font-mono font-bold">
+                              ⏳ {getAvailabilityCountdown(inspectedElement.expectedAvailableAt)}
+                            </Badge>
+                          )}
+                      </div>
+                      {inspectedElement.expectedAvailableAt &&
+                        (inspectedElement.effectiveStatus === 'Occupied' ||
+                          inspectedElement.effectiveStatus === 'Reserved') && (
+                          <p className="text-[10px] text-amber-400 font-medium">
+                            Expected available:{' '}
+                            {new Date(inspectedElement.expectedAvailableAt).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}{' '}
+                            (includes 15-min grace period)
+                          </p>
+                        )}
                       <p className="text-[11px] text-slate-400">
                         {inspectedElement.ineligibilityReason ||
                           'Click an available green slot to reserve.'}
@@ -1590,6 +1713,13 @@ export const CustomerBookingPage: React.FC = () => {
                     <span className="font-mono">₹{priceBreakdown.baseAmount}</span>
                   </div>
 
+                  {Boolean(priceBreakdown.platformBookingFee && priceBreakdown.platformBookingFee > 0) && (
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span>Platform Booking Fee</span>
+                      <span className="font-mono text-primary font-bold">₹{priceBreakdown.platformBookingFee}</span>
+                    </div>
+                  )}
+
                   <div className="pt-2 border-t border-border/60 flex items-center justify-between">
                     <span className="text-sm font-bold text-foreground">Final Payable Amount</span>
                     <span className="text-xl font-extrabold text-primary font-mono">
@@ -1615,7 +1745,8 @@ export const CustomerBookingPage: React.FC = () => {
                     !selectedSlotInfo ||
                     Boolean(configError) ||
                     isInitiatingPayment ||
-                    isVerifyingPayment
+                    isVerifyingPayment ||
+                    Boolean(selectedVehicleRecord?.hasActiveBooking)
                   }
                   onClick={() => void handleProceedToPayment()}
                 >
@@ -1624,6 +1755,8 @@ export const CustomerBookingPage: React.FC = () => {
                     ? 'Verifying Payment & Locking Bay...'
                     : isInitiatingPayment
                     ? 'Opening Razorpay Checkout...'
+                    : selectedVehicleRecord?.hasActiveBooking
+                    ? `Vehicle ${selectedVehicleRecord.vehicleNumber} Has Active Booking`
                     : selectedSlotInfo
                     ? `Pay ₹${priceBreakdown.totalAmount} & Confirm Slot ${selectedSlotInfo.slotNumber}`
                     : 'Select a Slot on 2D Plan to Continue'}
@@ -1668,7 +1801,8 @@ export const CustomerBookingPage: React.FC = () => {
               !selectedSlotInfo ||
               Boolean(configError) ||
               isInitiatingPayment ||
-              isVerifyingPayment
+              isVerifyingPayment ||
+              Boolean(selectedVehicleRecord?.hasActiveBooking)
             }
             onClick={() => void handleProceedToPayment()}
           >
@@ -1677,6 +1811,8 @@ export const CustomerBookingPage: React.FC = () => {
               ? 'Verifying...'
               : isInitiatingPayment
               ? 'Processing...'
+              : selectedVehicleRecord?.hasActiveBooking
+              ? 'Vehicle Booked'
               : selectedSlotInfo
               ? `Pay ₹${priceBreakdown.totalAmount}`
               : 'Select Bay'}

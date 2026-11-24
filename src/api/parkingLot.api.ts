@@ -42,6 +42,8 @@ export interface OfficialParkingLot {
   };
   totalFloors: number;
   totalCapacity?: number;
+  overflowCapacity?: number;
+  overflowSlotCount?: number;
   totalSlots?: number;
   availableCapacity?: number;
   availableSlots?: number;
@@ -80,9 +82,10 @@ export interface OfficialHierarchySlot {
   slotLabel: string;
   slotType: 'Standard' | 'EV Charging' | 'Accessible' | 'VIP' | 'Large Vehicle' | 'Compact';
   supportedVehicleType: 'Two-Wheeler' | 'Car' | 'Bus/Truck';
-  slotStatus: 'Available' | 'Occupied' | 'Reserved' | 'Out of Service' | 'Under Maintenance';
+  slotStatus: 'Available' | 'Occupied' | 'Reserved' | 'Out of Service' | 'Under Maintenance' | 'Overstay' | 'Barrier Open';
   qrIdentifier: string;
   remarks?: string | null;
+  isOverflow?: boolean;
 }
 
 export interface OfficialHierarchyZone {
@@ -148,6 +151,7 @@ export interface LayoutElementData {
     | 'BuildingEntrance';
   slotId?: string | null;
   slotNumber?: string | null;
+  isOverflow?: boolean;
   zoneId?: string | null;
   zoneCode?: string | null;
   zoneName?: string | null;
@@ -183,10 +187,12 @@ export interface LayoutElementData {
   // Customer Booking Mode dynamic fields
   slotType?: string | null;
   supportedVehicleType?: 'Bike' | 'Car' | 'SUV' | 'EV' | string | null;
-  effectiveStatus?: 'Available' | 'Reserved' | 'Occupied' | 'Under Maintenance' | null;
+  effectiveStatus?: 'Available' | 'Reserved' | 'Occupied' | 'Under Maintenance' | 'Overstay' | 'Barrier Open' | null;
   isVehicleCompatible?: boolean;
   isEligible?: boolean;
   ineligibilityReason?: string | null;
+  expectedAvailableAt?: string | null;
+  expectedAvailableMinutes?: number | null;
 }
 
 export interface ParkingLayoutData {
@@ -254,6 +260,7 @@ export interface CreateOfficialParkingLotResult {
 export interface GetOfficialParkingLotsParams {
   search?: string;
   status?: string;
+  ownerId?: string;
   page?: number;
   limit?: number;
 }
@@ -460,6 +467,19 @@ export async function updateFacilityCanvasBoundary(
     `/admin/parking-lots/${lotId}/layout/canvas-boundary`,
     data,
   );
+  return response.data;
+}
+
+/**
+ * 2D Layout API — Update Facility Overflow Capacity Threshold
+ */
+export async function updateOverflowConfig(
+  lotId: string,
+  overflowCapacity: number,
+): Promise<ApiResponse<{ overflowCapacity: number; overflowSlotCount: number; message: string }>> {
+  const response = await apiClient.patch<
+    ApiResponse<{ overflowCapacity: number; overflowSlotCount: number; message: string }>
+  >(`/admin/parking-lots/${lotId}/overflow-config`, { overflowCapacity });
   return response.data;
 }
 

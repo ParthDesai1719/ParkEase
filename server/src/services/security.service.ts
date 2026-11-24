@@ -16,9 +16,13 @@ import { PaymentModel, type Payment } from '../models/Payment.js';
 import { NotificationModel, type Notification } from '../models/Notification.js';
 import { AuditLogModel } from '../models/AuditLog.js';
 import { IncidentModel, type Incident } from '../models/Incident.js';
+import { SystemSettingsModel, type SystemSettings } from '../models/SystemSettings.js';
+import { BarrierReaderModel } from '../models/BarrierReader.js';
+import { BarrierEventModel } from '../models/BarrierEvent.js';
 import { customerBookingService } from './customerBooking.service.js';
 import { razorpayService } from './razorpay.service.js';
 import { emailService } from './email.service.js';
+import { barrierService } from './barrier.service.js';
 import { emitSlotStatusUpdate, emitBookingStatusUpdate, emitNewNotification, emitIncidentUpdate } from '../socket.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/AppError.js';
@@ -80,13 +84,69 @@ export interface SecurityDashboardStats {
   }>;
 }
 
+export interface ExitCashBreakdown {
+  extensionMinutes: number;
+  extensionAmount: number;
+  overstayMinutes: number;
+  overstayAmount: number;
+  totalCashCollected: number;
+}
+
+export interface ExitCashReceipt {
+  receiptNumber: string;
+  receiptDate: string;
+  parkingLotName: string;
+  parkingLotAddress: string;
+  bookingId: string;
+  bookingReference: string;
+  customerName: string;
+  customerPhone: string;
+  vehicleNumber: string;
+  vehicleType: string;
+  slotNumber: string;
+  scheduledEntryTime: string;
+  scheduledExitTime: string;
+  actualEntryTime?: string | undefined;
+  breakdown: ExitCashBreakdown;
+  paymentMethod: 'CASH';
+  staffName: string;
+  notes?: string;
+}
+
+export interface SettleExitCashResult {
+  success: boolean;
+  message: string;
+  bookingId: string;
+  bookingReference: string;
+  totalAmountCollected: number;
+  breakdown: ExitCashBreakdown;
+  receipt: ExitCashReceipt;
+  eligibleForExit: boolean;
+}
+
 export interface QrVerificationResult {
   isAuthentic: boolean;
   eligibleForEntry: boolean;
   entryIneligibilityReason: string | null;
   eligibleForExit: boolean;
   exitIneligibilityReason: string | null;
-  availableActions: Array<'ALLOW_ENTRY' | 'REJECT' | 'CANCEL' | 'VERIFY_EXIT' | 'COLLECT_OVERSTAY_CASH'>;
+  availableActions: Array<
+    'ALLOW_ENTRY' | 'REJECT' | 'CANCEL' | 'VERIFY_EXIT' | 'COLLECT_OVERSTAY_CASH' | 'COLLECT_EXTENSION_CASH' | 'COLLECT_EXIT_CASH'
+  >;
+  pendingCashExtension?: {
+    paymentId: string;
+    paymentReference: string;
+    amount: number;
+    durationMinutes?: number;
+    requestedAt?: Date;
+  } | null;
+  exitCashDue?: {
+    totalCashDue: number;
+    extensionAmount: number;
+    extensionMinutes: number;
+    overstayAmount: number;
+    overstayMinutes: number;
+  };
   booking: {
     bookingId: string;
     bookingReference: string;
@@ -169,7 +229,7 @@ export interface EntryVerificationResult {
     slotId: string;
     slotNumber: string;
     slotLabel: string;
-    slotStatus: 'Occupied';
+    slotStatus: 'Reserved' | 'Occupied';
     floorName: string;
     zoneName: string;
     zoneCode: string;
@@ -264,7 +324,52 @@ export interface ManualBookingItem {
     canCompleteExit: boolean;
     canRejectExit: boolean;
     canCollectCash: boolean;
+    canCollectExtensionCash?: boolean;
   };
+  pendingCashExtension?: {
+    paymentId: string;
+    paymentReference: string;
+    amount: number;
+    durationMinutes?: number;
+    requestedAt?: Date;
+  } | null;
+}
+
+export interface ConfirmCashExtensionResult {
+  success: boolean;
+  message: string;
+  bookingId: string;
+  bookingReference: string;
+  paymentId: string;
+  paymentReference: string;
+  amount: number;
+  paymentStatus: 'SUCCESSFUL';
+  paymentMethod: 'CASH';
+}
+
+export interface WalkInExtensionQuoteResult {
+  eligible: boolean;
+  bookingId: string;
+  bookingReference: string;
+  currentExitTime: string;
+  proposedExitTime: string;
+  additionalMinutes: number;
+  extensionCharge: number;
+  ratePerHour: number;
+  reason?: string;
+}
+
+export interface ProcessWalkInExtensionResult {
+  success: boolean;
+  message: string;
+  receiptNumber: string;
+  bookingId: string;
+  bookingReference: string;
+  previousExitTime: string;
+  newExitTime: string;
+  additionalMinutes: number;
+  amountPaid: number;
+  paymentReference: string;
 }
 
 export interface ManualSearchBookingsResult {
@@ -327,6 +432,7 @@ export interface WalkInSlotInfo {
   zoneName: string;
   supportedVehicleType: string;
   isAvailable: boolean;
+  isOverflow?: boolean;
 }
 
 export interface WalkInGroupedFloor {
@@ -359,6 +465,7 @@ export interface WalkInTariffResult {
   durationHours: number;
   hourlyRate: number;
   baseAmount: number;
+  platformBookingFee: number;
   additionalCharges: number;
   totalAmount: number;
   scheduledEntryTime: string;
@@ -413,6 +520,15 @@ export interface SecurityIncidentItem {
   resolvedAt: Date | null;
   resolutionNotes: string | null;
   closedAt: Date | null;
+  responses?: Array<{
+    responseId: string;
+    authorId: string;
+    authorRole: string;
+    authorName: string;
+    message: string;
+    attachments: string[];
+    createdAt: Date;
+  }>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -451,7 +567,7 @@ export interface CreateIncidentInput {
 export interface UpdateIncidentStatusInput {
   staffUserId: string;
   incidentId: string;
-  status: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed';
+  status: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed' | 'Pending' | 'Resolving' | string;
   resolutionNotes?: string | undefined;
 }
 
@@ -471,6 +587,7 @@ export interface WalkInBookingConfirmation {
     durationHours: number;
     durationMinutes: number;
     hourlyRate: number;
+    platformBookingFee?: number;
     totalAmount: number;
     gracePeriodMinutes: number;
     createdAt: string;
@@ -510,6 +627,7 @@ export interface WalkInBookingConfirmation {
     paymentStatus: 'SUCCESSFUL';
     paymentType: string;
     amount: number;
+    platformBookingFee?: number;
     paymentDate: string;
   };
   qrPayload: string;
@@ -968,7 +1086,7 @@ class SecurityService {
     const vehicle = booking.vehicleId as unknown as Vehicle;
     const floor = booking.floorId as unknown as ParkingFloor;
     const zone = booking.zoneId as unknown as ParkingZone;
-    const slot = booking.currentSlotId as unknown as ParkingSlot;
+    let slot = booking.currentSlotId as unknown as ParkingSlot;
 
     // Fetch primary payment and overstay payments
     const payments = await (PaymentModel as mongoose.Model<Payment>)
@@ -1008,30 +1126,73 @@ class SecurityService {
 
     // Live Overstay Calculation
     const now = new Date();
-    const scheduledExitTime = new Date(booking.scheduledExitTime);
-    const gracePeriodMinutes = booking.gracePeriodMinutes || 15;
-    const gracePeriodEnd = new Date(scheduledExitTime.getTime() + gracePeriodMinutes * 60 * 1000);
+    // Compute effective scheduled exit time taking approved/deferred extensions into account
+    let effectiveExitTime = new Date(booking.scheduledExitTime);
+    if (Array.isArray(booking.extensions)) {
+      for (const ext of booking.extensions) {
+        if (ext && ext.newScheduledExitTime) {
+          const d = new Date(ext.newScheduledExitTime);
+          if (!isNaN(d.getTime()) && d.getTime() > effectiveExitTime.getTime()) {
+            effectiveExitTime = d;
+          }
+        }
+      }
+    }
 
-    let overstayDetected = booking.bookingStatus === 'Overstay' || booking.overstayDetected || false;
-    let overstayDurationMinutes = booking.overstayDurationMinutes || 0;
-    let overstayCharge = booking.overstayCharge || 0;
+    let overstayDetected = false;
+    let overstayDurationMinutes = 0;
+    let overstayCharge = 0;
 
+    // Overstay is charged once the scheduled exit time (including any approved extensions) has elapsed
     if (
       (booking.bookingStatus === 'Active' || booking.bookingStatus === 'Overstay') &&
-      now.getTime() > gracePeriodEnd.getTime()
+      now.getTime() > effectiveExitTime.getTime()
     ) {
       overstayDetected = true;
       overstayDurationMinutes = Math.max(
         1,
-        Math.ceil((now.getTime() - scheduledExitTime.getTime()) / (60 * 1000)),
+        Math.ceil((now.getTime() - effectiveExitTime.getTime()) / (60 * 1000)),
       );
       const billableHours = Math.max(1, Math.ceil(overstayDurationMinutes / 60));
-      const ratePerHour = booking.overstayRateAtBooking || booking.parkingRateAtBooking || 0;
+      const ratePerHour = booking.overstayRateAtBooking || booking.parkingRateAtBooking || lot.hourlyRate || 0;
       overstayCharge = Math.round(billableHours * ratePerHour);
+
+      // Persist overstay in DB so collection and status remain strictly synchronized
+      if (
+        booking.overstayCharge !== overstayCharge ||
+        booking.overstayDurationMinutes !== overstayDurationMinutes ||
+        booking.bookingStatus !== 'Overstay'
+      ) {
+        booking.overstayCharge = overstayCharge;
+        booking.overstayDurationMinutes = overstayDurationMinutes;
+        booking.overstayDetected = true;
+        booking.overstayStartedAt = booking.overstayStartedAt || effectiveExitTime;
+        booking.bookingStatus = 'Overstay';
+        booking.additionalCharges = overstayCharge;
+        booking.totalAmount = (booking.baseAmount || 0) + (booking.platformBookingFee || 0) + overstayCharge;
+        await booking.save();
+
+        await (VehicleMovementLogModel as any).updateMany(
+          { bookingId: booking._id, exitTime: null },
+          {
+            $set: {
+              movementStatus: 'Overstayed',
+              overstayMinutes: overstayDurationMinutes,
+            },
+          },
+        );
+      }
+    } else if (booking.bookingStatus === 'Overstay' && now.getTime() <= effectiveExitTime.getTime()) {
+      // Revert status to Active if extension covered the time
+      booking.bookingStatus = 'Active';
+      booking.overstayDetected = false;
+      booking.overstayCharge = 0;
+      booking.overstayDurationMinutes = 0;
+      await booking.save();
     }
 
     let additionalChargePaymentStatus: 'PAID' | 'UNPAID' | 'NOT_APPLICABLE' = 'NOT_APPLICABLE';
-    if (overstayDetected || booking.bookingStatus === 'Overstay' || overstayCharge > 0) {
+    if (overstayDetected || overstayCharge > 0) {
       additionalChargePaymentStatus = overstayPayment ? 'PAID' : 'UNPAID';
     }
 
@@ -1063,8 +1224,20 @@ class SecurityService {
         slot.currentBookingId &&
         slot.currentBookingId.toString() !== booking._id.toString()
       ) {
-        eligibleForEntry = false;
-        entryIneligibilityReason = `Assigned bay ${slot.slotNumber} is currently occupied by another vehicle.`;
+        // Automatic Overstay Conflict Reassignment Engine per finalproject-5.txt
+        const reassignmentRes = await barrierService.resolveOverstaySlotConflict(
+          booking,
+          lot._id,
+          'PHYSICAL_CONTROLLER',
+        );
+        if (reassignmentRes.success && reassignmentRes.booking) {
+          booking = reassignmentRes.booking as any;
+          slot = (reassignmentRes.booking as any).currentSlotId;
+          eligibleForEntry = true;
+        } else {
+          eligibleForEntry = false;
+          entryIneligibilityReason = reassignmentRes.message;
+        }
       } else if (!withinOperatingSchedule) {
         eligibleForEntry = false;
         entryIneligibilityReason = operatingScheduleRemarks;
@@ -1073,18 +1246,79 @@ class SecurityService {
       }
     }
 
+    if (!booking) {
+      throw new AppError('Booking record not found.', 404, 'BOOKING_NOT_FOUND');
+    }
+
     // Evaluate Exit Eligibility
     let eligibleForExit = false;
     let exitIneligibilityReason: string | null = null;
 
-    if (booking.bookingStatus === 'Active') {
-      eligibleForExit = true;
-    } else if (booking.bookingStatus === 'Overstay') {
-      if (additionalChargePaymentStatus === 'PAID') {
-        eligibleForExit = true;
-      } else {
+    // Check if the assigned bay barrier has been scanned for departure
+    const slotIdForBayCheck = (slot as any)?._id || (booking.currentSlotId as any)?._id || booking.currentSlotId;
+    const bayReaderDoc = slotIdForBayCheck
+      ? await (BarrierReaderModel as any).findOne({ slotId: slotIdForBayCheck }).lean().exec()
+      : null;
+    const hasBayDepartureEvent = await (BarrierEventModel as any).exists({
+      bookingId: booking._id,
+      eventType: { $in: ['BAY_DEPARTURE_AUTHORIZED', 'VEHICLE_PASSAGE_OUT_CONFIRMED'] },
+      eventOutcome: { $in: ['GRANTED', 'SUCCESS'] },
+    });
+    const isBayDepartureRecorded =
+      Boolean(hasBayDepartureEvent) ||
+      Boolean(
+        bayReaderDoc &&
+          bayReaderDoc.activeBookingId?.toString() === booking._id.toString() &&
+          (bayReaderDoc.lastEvent === 'BAY_DEPARTURE_AUTHORIZED' ||
+            bayReaderDoc.lastEvent === 'BAY_DEPARTURE_COMPLETED'),
+      );
+    const requiresBayDepartureScan = Boolean(bayReaderDoc) && !isBayDepartureRecorded;
+
+    // Detect pending cash extension payment
+    const pendingCashExtension =
+      payments.find(
+        (p) =>
+          p.paymentTypeCode === 'EXTENSION' &&
+          p.paymentMethod === 'CASH' &&
+          p.paymentStatus === 'PENDING',
+      ) || null;
+
+    const extensionCashAmount = pendingCashExtension ? pendingCashExtension.amount : 0;
+    const extensionDurationMinutes = (pendingCashExtension?.metadata as any)?.additionalMinutes || 0;
+    const overstayCashAmount = (overstayDetected && additionalChargePaymentStatus === 'UNPAID') ? overstayCharge : 0;
+    const totalExitCashDue = extensionCashAmount + overstayCashAmount;
+
+    if (booking.bookingStatus === 'Active' || (booking.bookingStatus === 'Overstay' && !overstayDetected)) {
+      if (requiresBayDepartureScan) {
         eligibleForExit = false;
-        exitIneligibilityReason = `Overstay fee of ₹${overstayCharge} is pending. Payment required before exit completion.`;
+        exitIneligibilityReason = `Can't complete the process as the barrier (Bay ${slot?.slotNumber || 'Assigned Bay'}) is still occupied. Please scan at the bay barrier first to move out the vehicle.`;
+      } else if (totalExitCashDue > 0) {
+        eligibleForExit = false;
+        if (pendingCashExtension && overstayCashAmount > 0) {
+          exitIneligibilityReason = `Outstanding exit cash of ₹${totalExitCashDue} (Extension: ₹${extensionCashAmount} + Overstay: ₹${overstayCashAmount}) must be collected before exit.`;
+        } else if (pendingCashExtension) {
+          exitIneligibilityReason = `Outstanding cash extension payment of ₹${extensionCashAmount} must be collected before exit.`;
+        } else {
+          exitIneligibilityReason = `Overstay fee of ₹${overstayCashAmount} is pending. Payment required before exit completion.`;
+        }
+      } else {
+        eligibleForExit = true;
+      }
+    } else if (booking.bookingStatus === 'Overstay') {
+      if (requiresBayDepartureScan) {
+        eligibleForExit = false;
+        exitIneligibilityReason = `Can't complete the process as the barrier (Bay ${slot?.slotNumber || 'Assigned Bay'}) is still occupied. Please scan at the bay barrier first to move out the vehicle.`;
+      } else if (totalExitCashDue > 0) {
+        eligibleForExit = false;
+        if (pendingCashExtension && additionalChargePaymentStatus === 'UNPAID') {
+          exitIneligibilityReason = `Outstanding exit cash of ₹${totalExitCashDue} (Extension: ₹${extensionCashAmount} + Overstay: ₹${overstayCashAmount}) must be collected before exit.`;
+        } else if (pendingCashExtension) {
+          exitIneligibilityReason = `Outstanding cash extension payment of ₹${extensionCashAmount} must be collected before exit.`;
+        } else {
+          exitIneligibilityReason = `Overstay fee of ₹${overstayCashAmount} is pending. Payment required before exit completion.`;
+        }
+      } else {
+        eligibleForExit = true;
       }
     } else if (booking.bookingStatus === 'Completed') {
       eligibleForExit = false;
@@ -1095,14 +1329,18 @@ class SecurityService {
     }
 
     // Determine Available UI Actions per Module 4 Specification
-    const availableActions: Array<'ALLOW_ENTRY' | 'REJECT' | 'CANCEL' | 'VERIFY_EXIT' | 'COLLECT_OVERSTAY_CASH'> = [];
+    const availableActions: Array<
+      'ALLOW_ENTRY' | 'REJECT' | 'CANCEL' | 'VERIFY_EXIT' | 'COLLECT_OVERSTAY_CASH' | 'COLLECT_EXTENSION_CASH' | 'COLLECT_EXIT_CASH'
+    > = [];
     if (eligibleForEntry) {
       availableActions.push('ALLOW_ENTRY', 'REJECT', 'CANCEL');
     }
     if (eligibleForExit) {
       availableActions.push('VERIFY_EXIT');
-    } else if (booking.bookingStatus === 'Overstay' && additionalChargePaymentStatus === 'UNPAID') {
-      availableActions.push('COLLECT_OVERSTAY_CASH');
+    } else if (totalExitCashDue > 0) {
+      availableActions.push('COLLECT_EXIT_CASH');
+      if (pendingCashExtension) availableActions.push('COLLECT_EXTENSION_CASH');
+      if (additionalChargePaymentStatus === 'UNPAID') availableActions.push('COLLECT_OVERSTAY_CASH');
     }
 
     return {
@@ -1112,6 +1350,22 @@ class SecurityService {
       eligibleForExit,
       exitIneligibilityReason,
       availableActions,
+      pendingCashExtension: pendingCashExtension
+        ? {
+            paymentId: (pendingCashExtension._id as any).toString(),
+            paymentReference: pendingCashExtension.paymentReference,
+            amount: pendingCashExtension.amount,
+            durationMinutes: (pendingCashExtension.metadata as any)?.additionalMinutes || 0,
+            requestedAt: (pendingCashExtension as any).createdAt,
+          }
+        : null,
+      exitCashDue: {
+        totalCashDue: totalExitCashDue,
+        extensionAmount: extensionCashAmount,
+        extensionMinutes: extensionDurationMinutes,
+        overstayAmount: overstayCashAmount,
+        overstayMinutes: overstayDurationMinutes,
+      },
       booking: {
         bookingId: (booking._id as mongoose.Types.ObjectId).toString(),
         bookingReference: booking.bookingReference,
@@ -1266,16 +1520,10 @@ class SecurityService {
         booking.actualEntryTime = actualEntry;
         await booking.save({ session });
 
-        slot.slotStatus = 'Occupied';
+        // Gate entry only: bay stays Reserved until the vehicle scans at the bay barrier
+        slot.slotStatus = 'Reserved';
         slot.currentBookingId = booking._id as mongoose.Types.ObjectId;
         await slot.save({ session });
-
-        await customerBookingService.reconcileHierarchyCounters({
-          parkingLotId: booking.parkingLotId as mongoose.Types.ObjectId,
-          floorId: booking.floorId as mongoose.Types.ObjectId,
-          zoneId: booking.zoneId as mongoose.Types.ObjectId,
-          session,
-        });
 
         // Upsert / Write VehicleMovementLog
         let mLog = await (VehicleMovementLogModel as mongoose.Model<VehicleMovementLog>)
@@ -1331,7 +1579,7 @@ class SecurityService {
               eventCode: 'VEHICLE_ENTERED',
               eventType: 'Vehicle Entered',
               eventTitle: 'Vehicle Checked In',
-              eventDescription: `Vehicle entered through gate. Bay ${slot.slotNumber} marked Occupied. Method: ${entryMethod}.`,
+              eventDescription: `Vehicle entered through gate. Bay ${slot.slotNumber} remains Reserved until bay scan. Method: ${entryMethod}.`,
               eventSource: 'Security Staff',
               eventTime: actualEntry,
               metadata: {
@@ -1384,7 +1632,7 @@ class SecurityService {
       zoneId: (resultBooking!.zoneId as mongoose.Types.ObjectId).toString(),
       slotId: (resultSlot!._id as mongoose.Types.ObjectId).toString(),
       slotNumber: resultSlot!.slotNumber,
-      slotStatus: 'Occupied',
+      slotStatus: 'Reserved',
       timestamp: resultBooking!.actualEntryTime!.toISOString(),
     });
 
@@ -1399,7 +1647,7 @@ class SecurityService {
 
     return {
       success: true,
-      message: `Vehicle entry verified successfully. Bay ${resultSlot!.slotNumber} is now Occupied.`,
+      message: `Vehicle entry verified successfully. Bay ${resultSlot!.slotNumber} is Reserved. Customer must scan at the bay barrier to occupy it.`,
       bookingId: (resultBooking!._id as mongoose.Types.ObjectId).toString(),
       bookingReference: resultBooking!.bookingReference,
       bookingStatus: 'Active',
@@ -1408,7 +1656,7 @@ class SecurityService {
         slotId: (resultSlot!._id as mongoose.Types.ObjectId).toString(),
         slotNumber: resultSlot!.slotNumber,
         slotLabel: resultSlot!.slotLabel,
-        slotStatus: 'Occupied',
+        slotStatus: 'Reserved',
         floorName: resultFloor?.floorName || 'Ground Floor',
         zoneName: resultZone?.zoneName || 'Zone A',
         zoneCode: resultZone?.zoneCode || 'A',
@@ -1471,8 +1719,52 @@ class SecurityService {
           );
         }
 
+        // MANDATORY CASH EXTENSION PAYMENT ENFORCEMENT:
+        const pendingCashExtension = await (PaymentModel as mongoose.Model<Payment>)
+          .findOne({
+            bookingId: booking._id,
+            paymentTypeCode: 'EXTENSION',
+            paymentMethod: 'CASH',
+            paymentStatus: 'PENDING',
+          })
+          .session(session)
+          .exec();
+
+        if (pendingCashExtension) {
+          throw new AppError(
+            `Cannot complete exit: Outstanding cash extension payment of ₹${pendingCashExtension.amount} must be collected and confirmed before vehicle can leave.`,
+            409,
+            'EXTENSION_PAYMENT_PENDING',
+          );
+        }
+
         // MANDATORY OVERSTAY PAYMENT ENFORCEMENT:
-        if (booking.bookingStatus === 'Overstay' || (booking.overstayCharge && booking.overstayCharge > 0)) {
+        // Check effective exit time including extensions
+        let effectiveExitTime = new Date(booking.scheduledExitTime);
+        if (Array.isArray(booking.extensions)) {
+          for (const ext of booking.extensions) {
+            if (ext && ext.newScheduledExitTime) {
+              const d = new Date(ext.newScheduledExitTime);
+              if (!isNaN(d.getTime()) && d.getTime() > effectiveExitTime.getTime()) {
+                effectiveExitTime = d;
+              }
+            }
+          }
+        }
+        const isActuallyOverstay = Date.now() > effectiveExitTime.getTime();
+
+        if (isActuallyOverstay || booking.bookingStatus === 'Overstay' || (booking.overstayCharge && booking.overstayCharge > 0)) {
+          const overstayMinutes = isActuallyOverstay
+            ? Math.max(1, Math.ceil((Date.now() - effectiveExitTime.getTime()) / (60 * 1000)))
+            : booking.overstayDurationMinutes || 1;
+          const billableHours = Math.max(1, Math.ceil(overstayMinutes / 60));
+          const ratePerHour = booking.overstayRateAtBooking || booking.parkingRateAtBooking || 0;
+          const computedOverstayCharge = Math.max(booking.overstayCharge || 0, Math.round(billableHours * ratePerHour));
+
+          booking.overstayDetected = true;
+          booking.overstayDurationMinutes = overstayMinutes;
+          booking.overstayCharge = computedOverstayCharge;
+
           const overstayPayment = await (PaymentModel as mongoose.Model<Payment>)
             .findOne({
               bookingId: booking._id,
@@ -1482,9 +1774,9 @@ class SecurityService {
             .session(session)
             .exec();
 
-          if (!overstayPayment) {
+          if (!overstayPayment && computedOverstayCharge > 0) {
             throw new AppError(
-              `Cannot complete exit: Outstanding overstay charge of ₹${booking.overstayCharge || 0} must be settled before vehicle can leave.`,
+              `Cannot complete exit: Outstanding overstay charge of ₹${computedOverstayCharge} must be settled before vehicle can leave.`,
               409,
               'OVERSTAY_PAYMENT_PENDING',
             );
@@ -1499,6 +1791,35 @@ class SecurityService {
 
         if (!slot) {
           throw new AppError('Assigned parking slot not found.', 404, 'SLOT_NOT_FOUND');
+        }
+
+        // Enforce mandatory bay barrier departure scan if a bay reader exists for this slot
+        const bayReaderDoc = await (BarrierReaderModel as any)
+          .findOne({ slotId: slot._id })
+          .session(session)
+          .lean()
+          .exec();
+        if (bayReaderDoc) {
+          const hasBayDepartureEvent = await (BarrierEventModel as any)
+            .exists({
+              bookingId: booking._id,
+              eventType: { $in: ['BAY_DEPARTURE_AUTHORIZED', 'VEHICLE_PASSAGE_OUT_CONFIRMED'] },
+              eventOutcome: { $in: ['GRANTED', 'SUCCESS'] },
+            })
+            .session(session);
+          const isBayDepartureRecorded =
+            Boolean(hasBayDepartureEvent) ||
+            (bayReaderDoc.activeBookingId?.toString() === booking._id.toString() &&
+              (bayReaderDoc.lastEvent === 'BAY_DEPARTURE_AUTHORIZED' ||
+                bayReaderDoc.lastEvent === 'BAY_DEPARTURE_COMPLETED'));
+
+          if (!isBayDepartureRecorded) {
+            throw new AppError(
+              `Can't complete the process as the barrier (Bay ${slot.slotNumber}) is still occupied. Please scan at the bay barrier first to move out the vehicle.`,
+              409,
+              'BAY_BARRIER_STILL_OCCUPIED',
+            );
+          }
         }
 
         const actualExit = new Date();
@@ -1642,6 +1963,58 @@ class SecurityService {
       timestamp: resultBooking!.actualExitTime!.toISOString(),
     });
 
+    // Automated Booking Completion Email with "Review Parking" CTA
+    if (!(resultBooking as any).completionEmailSent) {
+      void (async () => {
+        try {
+          await (BookingModel as mongoose.Model<Booking>).findByIdAndUpdate(resultBooking!._id, {
+            completionEmailSent: true,
+          });
+          const populatedBooking = await (BookingModel as mongoose.Model<Booking>)
+            .findById(resultBooking!._id)
+            .populate('customerId', 'fullName email mobileNumber')
+            .populate('parkingLotId', 'parkingName address city state')
+            .populate('vehicleId', 'vehicleNumber vehicleType vehicleBrand vehicleModel')
+            .populate('floorId', 'floorName floorNumber')
+            .populate('zoneId', 'zoneCode zoneName')
+            .populate('currentSlotId', 'slotNumber')
+            .lean()
+            .exec();
+
+          const cust = populatedBooking?.customerId as any;
+          const lotDoc = populatedBooking?.parkingLotId as any;
+          const vehDoc = populatedBooking?.vehicleId as any;
+          const targetEmail = cust?.email || (populatedBooking as any)?.guestEmail;
+          if (targetEmail && lotDoc) {
+            await emailService.sendBookingCompletionEmail({
+              to: targetEmail,
+              customerName: cust?.fullName || 'Valued Customer',
+              bookingId: (resultBooking!._id as mongoose.Types.ObjectId).toString(),
+              parkingLotId: (lotDoc._id || parkingLotId).toString(),
+              bookingReference: resultBooking!.bookingReference,
+              parkingName: lotDoc.parkingName || 'Parking Facility',
+              parkingAddress:
+                typeof lotDoc.address === 'string'
+                  ? lotDoc.address
+                  : `${lotDoc.address?.street || ''}, ${lotDoc.address?.city || ''}`,
+              vehicleNumber: vehDoc?.vehicleNumber || 'Vehicle',
+              vehicleType: vehDoc?.vehicleType || 'Car',
+              slotNumber:
+                (populatedBooking?.currentSlotId as any)?.slotNumber || resultSlot?.slotNumber,
+              floorName: (populatedBooking?.floorId as any)?.floorName,
+              zoneCode: (populatedBooking?.zoneId as any)?.zoneCode,
+              entryTime: resultBooking!.actualEntryTime || resultBooking!.scheduledEntryTime,
+              exitTime: resultBooking!.actualExitTime!,
+              stayDurationMinutes: computedDurationMinutes,
+              totalAmount: resultBooking!.totalAmount,
+            });
+          }
+        } catch (mailErr) {
+          console.error('[verifyExitScan sendBookingCompletionEmail Error]:', mailErr);
+        }
+      })();
+    }
+
     return {
       success: true,
       message: `Vehicle exit verified successfully. Booking ${resultBooking!.bookingReference} completed.`,
@@ -1688,13 +2061,16 @@ class SecurityService {
       throw new AppError('This booking is not assigned to this facility.', 403, 'WRONG_PARKING_LOT');
     }
 
-    if (booking.bookingStatus !== 'Overstay' && (!booking.overstayCharge || booking.overstayCharge <= 0)) {
-      throw new AppError('This booking is not in an Overstay state requiring payment.', 400, 'NOT_IN_OVERSTAY');
-    }
-
-    // Exact backend calculated amount enforcement
-    const requiredAmount = booking.overstayCharge || 0;
-    if (amount !== requiredAmount) {
+    let requiredAmount = booking.overstayCharge || 0;
+    if (requiredAmount <= 0) {
+      if (amount && amount > 0) {
+        requiredAmount = amount;
+        booking.overstayCharge = amount;
+        booking.overstayDetected = true;
+      } else {
+        throw new AppError('This booking is not in an Overstay state requiring payment.', 400, 'NOT_IN_OVERSTAY');
+      }
+    } else if (amount && amount !== requiredAmount) {
       throw new AppError(
         `Staff cannot modify charge: Exact outstanding amount of ₹${requiredAmount} must be collected.`,
         400,
@@ -1787,6 +2163,43 @@ class SecurityService {
     });
     emitNewNotification(booking.customerId.toString(), notif);
 
+    // Dispatch receipt email to customer for overstay payment
+    try {
+      const [customerDoc, lotDoc, slotDoc, vehicleDoc] = await Promise.all([
+        (UserModel as mongoose.Model<User>).findById(booking.customerId).lean().exec(),
+        (ParkingLotModel as mongoose.Model<ParkingLot>).findById(booking.parkingLotId).lean().exec(),
+        (ParkingSlotModel as mongoose.Model<ParkingSlot>).findById(booking.currentSlotId).lean().exec(),
+        (VehicleModel as mongoose.Model<Vehicle>).findById(booking.vehicleId).lean().exec(),
+      ]);
+
+      if (customerDoc?.email) {
+        void emailService.sendExtraChargesReceiptEmail({
+          to: customerDoc.email,
+          customerName: customerDoc.fullName || 'Valued Customer',
+          receiptNumber: paymentReference,
+          bookingReference: booking.bookingReference,
+          parkingName: lotDoc?.parkingName || 'ParkEase Facility',
+          parkingAddress: lotDoc?.address,
+          slotNumber: slotDoc?.slotNumber || 'Assigned Bay',
+          vehicleNumber: vehicleDoc?.vehicleNumber || '',
+          vehicleType: vehicleDoc?.vehicleType,
+          settlementDate: new Date(),
+          paymentMethod: 'CASH',
+          collectedByName: 'Security Staff',
+          chargeTitle: 'Overstay Parking Fee Receipt',
+          breakdown: {
+            overstayMinutes: booking.overstayDurationMinutes || 0,
+            overstayAmount: requiredAmount,
+            totalAmountPaid: requiredAmount,
+          },
+          bookingId: booking._id.toString(),
+          parkingLotId: booking.parkingLotId.toString(),
+        }).catch((e) => console.warn('Overstay receipt email failed:', e));
+      }
+    } catch (e) {
+      console.warn('Overstay receipt email dispatch error:', e);
+    }
+
     // Socket.IO event for dashboard update
     emitBookingStatusUpdate({
       bookingId: booking._id.toString(),
@@ -1809,6 +2222,566 @@ class SecurityService {
       paymentMethod: 'CASH',
       paymentStatus: 'SUCCESSFUL',
       additionalChargePaymentStatus: 'PAID',
+    };
+  }
+
+  /**
+   * Confirms collection of cash payment for a deferred customer booking extension at exit.
+   * Updates Payment status to SUCCESSFUL, links collecting staff, updates booking extension entry,
+   * creates timeline and audit log entries, and emits status updates.
+   */
+  public async confirmCashExtensionPayment(params: {
+    staffUserId: string;
+    parkingLotId: string;
+    bookingId: string;
+    paymentId?: string;
+    notes?: string;
+  }): Promise<ConfirmCashExtensionResult> {
+    const { staffUserId, parkingLotId, bookingId, paymentId, notes } = params;
+
+    await this.assertStaffLotAssignment(staffUserId, parkingLotId);
+
+    if (!mongoose.isValidObjectId(bookingId)) {
+      throw new AppError('Invalid booking ID.', 400, 'INVALID_BOOKING_ID');
+    }
+
+    const booking = await (BookingModel as mongoose.Model<Booking>).findById(bookingId);
+    if (!booking) {
+      throw new AppError('Booking not found.', 404, 'BOOKING_NOT_FOUND');
+    }
+
+    if (booking.parkingLotId.toString() !== parkingLotId) {
+      throw new AppError('This booking is not assigned to this facility.', 403, 'WRONG_PARKING_LOT');
+    }
+
+    const paymentQuery: Record<string, any> = {
+      bookingId: booking._id,
+      paymentTypeCode: 'EXTENSION',
+      paymentMethod: 'CASH',
+      paymentStatus: 'PENDING',
+    };
+    if (paymentId && mongoose.isValidObjectId(paymentId)) {
+      paymentQuery._id = new mongoose.Types.ObjectId(paymentId);
+    }
+
+    const payment = await (PaymentModel as mongoose.Model<Payment>).findOne(paymentQuery);
+    if (!payment) {
+      throw new AppError('No pending cash extension payment found for this booking.', 404, 'NO_PENDING_CASH_EXTENSION');
+    }
+
+    const staffUser = await (UserModel as mongoose.Model<User>).findById(staffUserId).lean().exec();
+    const staffName = staffUser?.fullName || 'Security Staff';
+
+    payment.paymentStatus = 'SUCCESSFUL';
+    payment.collectedBy = new mongoose.Types.ObjectId(staffUserId);
+    payment.cashConfirmedAt = new Date();
+    payment.paymentDate = new Date();
+    payment.remarks = `Cash extension collected at gate by ${staffName}. Notes: ${notes || 'None'}`;
+    await payment.save();
+
+    // Update matching extension in booking
+    if (booking.extensions && booking.extensions.length > 0) {
+      for (const ext of booking.extensions) {
+        if (
+          ext.paymentStatus === 'PENDING' &&
+          (ext.paymentId?.toString() === payment._id.toString() || ext.paymentReference === payment.paymentReference)
+        ) {
+          ext.paymentStatus = 'SUCCESSFUL';
+          ext.cashCollectedAt = new Date();
+          ext.cashCollectedBy = new mongoose.Types.ObjectId(staffUserId);
+        }
+      }
+      await booking.save();
+    }
+
+    // Timeline Record
+    await (BookingTimelineModel as any).create({
+      bookingId: booking._id,
+      performedBy: new mongoose.Types.ObjectId(staffUserId),
+      eventCode: 'BOOKING_EXTENDED',
+      eventType: 'Booking Extended',
+      eventTitle: 'Cash Extension Payment Collected',
+      eventDescription: `Security staff ${staffName} confirmed physical cash collection of ₹${payment.amount} for booking extension.`,
+      eventSource: 'Security Staff',
+      eventTime: new Date(),
+      metadata: {
+        paymentReference: payment.paymentReference,
+        amount: payment.amount,
+        paymentMethod: 'CASH',
+        notes: notes || null,
+      },
+    });
+
+    // Audit Log Record
+    await (AuditLogModel as any).create({
+      userId: new mongoose.Types.ObjectId(staffUserId),
+      actionCode: 'EXTENSION_CASH_COLLECTED',
+      module: 'Payment Management',
+      actionTitle: 'Extension Cash Collected at Exit Gate',
+      description: `Security staff ${staffName} confirmed cash collection of ₹${payment.amount} for extension on booking ${booking.bookingReference}.`,
+      targetCollection: 'payments',
+      targetDocumentId: payment._id,
+      actionStatus: 'Success',
+    });
+
+    // In-app Notification for Customer
+    const notif = await (NotificationModel as any).create({
+      notificationReference: `NOTIF-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+      userId: booking.customerId,
+      bookingId: booking._id,
+      paymentId: payment._id,
+      notificationType: 'Payment',
+      eventType: 'Payment Successful',
+      title: 'Extension Payment Confirmed (Cash)',
+      message: `Cash payment of ₹${payment.amount} for booking extension was collected at the gate.`,
+      priority: 'Normal',
+      deliveryChannel: 'In-App',
+      deliveryStatus: 'Delivered',
+      isRead: false,
+    });
+    emitNewNotification(booking.customerId.toString(), notif);
+
+    // Dispatch receipt email to customer for cash extension payment
+    try {
+      const [customerDoc, lotDoc, slotDoc, vehicleDoc] = await Promise.all([
+        (UserModel as mongoose.Model<User>).findById(booking.customerId).lean().exec(),
+        (ParkingLotModel as mongoose.Model<ParkingLot>).findById(booking.parkingLotId).lean().exec(),
+        (ParkingSlotModel as mongoose.Model<ParkingSlot>).findById(booking.currentSlotId).lean().exec(),
+        (VehicleModel as mongoose.Model<Vehicle>).findById(booking.vehicleId).lean().exec(),
+      ]);
+
+      if (customerDoc?.email) {
+        void emailService.sendExtraChargesReceiptEmail({
+          to: customerDoc.email,
+          customerName: customerDoc.fullName || 'Valued Customer',
+          receiptNumber: payment.paymentReference,
+          bookingReference: booking.bookingReference,
+          parkingName: lotDoc?.parkingName || 'ParkEase Facility',
+          parkingAddress: lotDoc?.address,
+          slotNumber: slotDoc?.slotNumber || 'Assigned Bay',
+          vehicleNumber: vehicleDoc?.vehicleNumber || '',
+          vehicleType: vehicleDoc?.vehicleType,
+          settlementDate: new Date(),
+          paymentMethod: 'CASH',
+          collectedByName: staffName,
+          chargeTitle: 'Booking Extension Payment Receipt (Cash)',
+          breakdown: {
+            extensionAmount: payment.amount,
+            totalAmountPaid: payment.amount,
+          },
+          notes,
+          bookingId: booking._id.toString(),
+          parkingLotId: booking.parkingLotId.toString(),
+        }).catch((e) => console.warn('Extension receipt email failed:', e));
+      }
+    } catch (e) {
+      console.warn('Extension receipt email dispatch error:', e);
+    }
+
+    // Socket.IO event for dashboard update
+    emitBookingStatusUpdate({
+      bookingId: booking._id.toString(),
+      bookingReference: booking.bookingReference,
+      parkingLotId: booking.parkingLotId.toString(),
+      customerId: booking.customerId.toString(),
+      bookingStatus: booking.bookingStatus,
+      paymentStatus: 'SUCCESSFUL',
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      message: 'Extension cash payment collected and confirmed successfully.',
+      bookingId: booking._id.toString(),
+      bookingReference: booking.bookingReference,
+      paymentId: payment._id.toString(),
+      paymentReference: payment.paymentReference,
+      amount: payment.amount,
+      paymentStatus: 'SUCCESSFUL',
+      paymentMethod: 'CASH',
+    };
+  }
+
+  /**
+   * Unified Exit Cash Settlement Service.
+   * Collects all outstanding exit cash due (Pending Extension Cash + Live Overstay Fees) in a single atomic transaction.
+   * Generates and returns an itemized official receipt and enables vehicle departure.
+   */
+  public async settleExitCashPayments(params: {
+    staffUserId: string;
+    parkingLotId: string;
+    bookingId: string;
+    notes?: string;
+  }): Promise<SettleExitCashResult> {
+    const { staffUserId, parkingLotId, bookingId, notes } = params;
+
+    await this.assertStaffLotAssignment(staffUserId, parkingLotId);
+
+    if (!mongoose.isValidObjectId(bookingId)) {
+      throw new AppError('Invalid booking ID.', 400, 'INVALID_BOOKING_ID');
+    }
+
+    const booking = await (BookingModel as mongoose.Model<Booking>)
+      .findById(bookingId)
+      .populate('customerId')
+      .populate('vehicleId')
+      .populate('currentSlotId')
+      .populate('parkingLotId')
+      .exec();
+
+    if (!booking) {
+      throw new AppError('Booking not found.', 404, 'BOOKING_NOT_FOUND');
+    }
+
+    const lotIdStr = (booking.parkingLotId as any)?._id
+      ? (booking.parkingLotId as any)._id.toString()
+      : booking.parkingLotId.toString();
+
+    if (lotIdStr !== parkingLotId) {
+      throw new AppError('This booking is not assigned to this facility.', 403, 'WRONG_PARKING_LOT');
+    }
+
+    const staffUser = await (UserModel as mongoose.Model<User>).findById(staffUserId).lean().exec();
+    const staffName = staffUser?.fullName || 'Security Staff';
+
+    const customer = booking.customerId as unknown as User;
+    const vehicle = booking.vehicleId as unknown as Vehicle;
+    const slot = booking.currentSlotId as unknown as ParkingSlot;
+    const lot = booking.parkingLotId as unknown as ParkingLot;
+
+    // 1. Detect pending cash extension
+    const pendingCashExtension = await (PaymentModel as mongoose.Model<Payment>).findOne({
+      bookingId: booking._id,
+      paymentTypeCode: 'EXTENSION',
+      paymentMethod: 'CASH',
+      paymentStatus: 'PENDING',
+    });
+
+    let extensionAmount = 0;
+    let extensionMinutes = 0;
+    if (pendingCashExtension) {
+      extensionAmount = pendingCashExtension.amount;
+      extensionMinutes = (pendingCashExtension.metadata as any)?.additionalMinutes || 0;
+    }
+
+    // 2. Compute effective exit time taking extensions into account
+    const now = new Date();
+    let effectiveExitTime = new Date(booking.scheduledExitTime);
+    if (Array.isArray(booking.extensions)) {
+      for (const ext of booking.extensions) {
+        if (ext && ext.newScheduledExitTime) {
+          const d = new Date(ext.newScheduledExitTime);
+          if (!isNaN(d.getTime()) && d.getTime() > effectiveExitTime.getTime()) {
+            effectiveExitTime = d;
+          }
+        }
+      }
+    }
+
+    const gracePeriodMinutes = booking.gracePeriodMinutes || 15;
+    const gracePeriodEnd = new Date(effectiveExitTime.getTime() + gracePeriodMinutes * 60 * 1000);
+
+    let overstayMinutes = 0;
+    let overstayAmount = 0;
+
+    // IMPORTANT: Overstay penalty is ONLY charged if current time is PAST effective extension exit + grace period
+    if (
+      (booking.bookingStatus === 'Active' || booking.bookingStatus === 'Overstay') &&
+      now.getTime() > gracePeriodEnd.getTime()
+    ) {
+      overstayMinutes = Math.max(1, Math.ceil((now.getTime() - effectiveExitTime.getTime()) / (60 * 1000)));
+      const billableHours = Math.max(1, Math.ceil(overstayMinutes / 60));
+      const ratePerHour = booking.overstayRateAtBooking || booking.parkingRateAtBooking || lot?.hourlyRate || 0;
+      overstayAmount = Math.round(billableHours * ratePerHour);
+    }
+
+    // Check if overstay payment was already made
+    const existingOverstayPayment = await (PaymentModel as mongoose.Model<Payment>).findOne({
+      bookingId: booking._id,
+      paymentTypeCode: 'OVERSTAY',
+      paymentStatus: 'SUCCESSFUL',
+    });
+    if (existingOverstayPayment) {
+      overstayAmount = 0;
+      overstayMinutes = 0;
+    }
+
+    const totalCashCollected = extensionAmount + overstayAmount;
+
+    // 3. Confirm Extension Cash Payment
+    if (pendingCashExtension) {
+      pendingCashExtension.paymentStatus = 'SUCCESSFUL';
+      pendingCashExtension.collectedBy = new mongoose.Types.ObjectId(staffUserId);
+      pendingCashExtension.cashConfirmedAt = new Date();
+      pendingCashExtension.paymentDate = new Date();
+      pendingCashExtension.remarks = `Exit Cash Settlement: Extension fee ₹${extensionAmount} collected at gate by ${staffName}. Notes: ${notes || 'None'}`;
+      await pendingCashExtension.save();
+
+      // Update matching extension in booking
+      if (Array.isArray(booking.extensions)) {
+        for (const ext of booking.extensions) {
+          if (
+            ext.paymentStatus === 'PENDING' &&
+            (ext.paymentId?.toString() === pendingCashExtension._id.toString() ||
+              ext.paymentReference === pendingCashExtension.paymentReference)
+          ) {
+            ext.paymentStatus = 'SUCCESSFUL';
+            ext.cashCollectedAt = new Date();
+            ext.cashCollectedBy = new mongoose.Types.ObjectId(staffUserId);
+          }
+        }
+      }
+
+      await (BookingTimelineModel as any).create({
+        bookingId: booking._id,
+        performedBy: new mongoose.Types.ObjectId(staffUserId),
+        eventCode: 'BOOKING_EXTENDED',
+        eventType: 'Booking Extended',
+        eventTitle: 'Cash Extension Collected at Exit Gate',
+        eventDescription: `Security staff ${staffName} confirmed physical cash collection of ₹${extensionAmount} for booking extension.`,
+        eventSource: 'Security Staff',
+        eventTime: new Date(),
+        metadata: {
+          paymentReference: pendingCashExtension.paymentReference,
+          amount: extensionAmount,
+          paymentMethod: 'CASH',
+          notes: notes || null,
+        },
+      });
+    }
+
+    // 4. Record Overstay Cash Payment
+    if (overstayAmount > 0) {
+      const overstayPaymentRef = this.generatePaymentReference();
+      const customerId = (booking.customerId as any)?._id || booking.customerId;
+      const lotId = (booking.parkingLotId as any)?._id || booking.parkingLotId;
+      await (PaymentModel as mongoose.Model<Payment>).create({
+        paymentReference: overstayPaymentRef,
+        bookingId: booking._id,
+        customerId,
+        ownerId: lot?.ownerId || null,
+        parkingLotId: lotId,
+        paymentType: 'Overstay Charges',
+        paymentTypeCode: 'OVERSTAY',
+        paymentMethod: 'CASH',
+        paymentStatus: 'SUCCESSFUL',
+        amount: overstayAmount,
+        additionalCharges: 0,
+        refundAmount: 0,
+        paymentDate: new Date(),
+        collectedBy: new mongoose.Types.ObjectId(staffUserId),
+        remarks: `Exit Cash Settlement: Overstay fee ₹${overstayAmount} collected at gate by ${staffName}. Duration: ${overstayMinutes}m. Notes: ${notes || 'None'}`,
+      });
+
+      booking.overstayCharge = overstayAmount;
+      booking.overstayDurationMinutes = overstayMinutes;
+      (booking as any).overstaySettled = true;
+      booking.overstayDetected = true;
+
+      await (BookingTimelineModel as any).create({
+        bookingId: booking._id,
+        performedBy: new mongoose.Types.ObjectId(staffUserId),
+        eventCode: 'OVERSTAY_CASH_COLLECTED',
+        eventType: 'Overstay Cash Collected',
+        eventTitle: 'Overstay Cash Collected at Exit Gate',
+        eventDescription: `Security staff ${staffName} confirmed physical cash collection of ₹${overstayAmount} for ${overstayMinutes} minutes overstay.`,
+        eventSource: 'Security Staff',
+        eventTime: new Date(),
+        metadata: {
+          paymentReference: overstayPaymentRef,
+          amount: overstayAmount,
+          durationMinutes: overstayMinutes,
+          paymentMethod: 'CASH',
+          notes: notes || null,
+        },
+      });
+    } else if (booking.bookingStatus === 'Overstay' && now.getTime() <= gracePeriodEnd.getTime()) {
+      booking.bookingStatus = 'Active';
+      booking.overstayDetected = false;
+      booking.overstayCharge = 0;
+      booking.overstayDurationMinutes = 0;
+      (booking as any).overstaySettled = true;
+    }
+
+    await booking.save();
+
+    // 5. Generate Itemized Receipt
+    const receiptNumber = `RCP-EXIT-${booking.bookingReference.slice(-6)}-${Date.now().toString(36).toUpperCase()}`;
+    const receipt: ExitCashReceipt = {
+      receiptNumber,
+      receiptDate: new Date().toISOString(),
+      parkingLotName: lot?.parkingName || 'ParkEase Parking Facility',
+      parkingLotAddress: lot?.address ? `${lot.address}, ${lot.city || ''}` : 'Exit Gate Post',
+      bookingId: booking._id.toString(),
+      bookingReference: booking.bookingReference,
+      customerName: customer?.fullName || 'Guest Driver',
+      customerPhone: customer?.mobileNumber || '',
+      vehicleNumber: vehicle?.vehicleNumber || '',
+      vehicleType: vehicle?.vehicleType || 'Car',
+      slotNumber: slot?.slotNumber || 'Assigned Bay',
+      scheduledEntryTime: new Date(booking.scheduledEntryTime).toISOString(),
+      scheduledExitTime: effectiveExitTime.toISOString(),
+      actualEntryTime: booking.actualEntryTime ? new Date(booking.actualEntryTime).toISOString() : undefined,
+      breakdown: {
+        extensionMinutes,
+        extensionAmount,
+        overstayMinutes,
+        overstayAmount,
+        totalCashCollected,
+      },
+      paymentMethod: 'CASH',
+      staffName,
+      notes: notes || '',
+    };
+
+    // 6. Write Audit Log
+    await (AuditLogModel as any).create({
+      userId: new mongoose.Types.ObjectId(staffUserId),
+      actionCode: 'COLLECT_EXIT_CASH',
+      module: 'SecurityStaff',
+      actionTitle: 'Exit Cash Settled at Gate',
+      description: `Security staff ${staffName} collected ₹${totalCashCollected} exit cash (Extension: ₹${extensionAmount}, Overstay: ₹${overstayAmount}) for booking ${booking.bookingReference}.`,
+      targetCollection: 'bookings',
+      targetDocumentId: booking._id,
+      actionStatus: 'Success',
+      metadata: {
+        bookingReference: booking.bookingReference,
+        receiptNumber,
+        breakdown: receipt.breakdown,
+        notes: notes || null,
+      },
+    });
+
+    // 7. Send Itemized Receipt Email to Customer
+    if (customer?.email && totalCashCollected > 0) {
+      void emailService.sendExtraChargesReceiptEmail({
+        to: customer.email,
+        customerName: customer.fullName || 'Valued Customer',
+        receiptNumber,
+        bookingReference: booking.bookingReference,
+        parkingName: lot?.parkingName || 'ParkEase Parking Facility',
+        parkingAddress: lot?.address,
+        slotNumber: slot?.slotNumber || 'Assigned Bay',
+        vehicleNumber: vehicle?.vehicleNumber || '',
+        vehicleType: vehicle?.vehicleType,
+        settlementDate: new Date(),
+        paymentMethod: 'CASH',
+        collectedByName: staffName,
+        chargeTitle: 'Exit Gate Cash Settlement Receipt',
+        breakdown: {
+          extensionMinutes,
+          extensionAmount,
+          overstayMinutes,
+          overstayAmount,
+          totalAmountPaid: totalCashCollected,
+        },
+        notes: notes || undefined,
+        bookingId: booking._id.toString(),
+        parkingLotId: lotIdStr,
+      }).catch((emailErr) => {
+        console.warn('Failed to send exit cash receipt email:', emailErr);
+      });
+    }
+
+    // 8. Emit Dashboard Status Update
+    emitBookingStatusUpdate({
+      bookingId: booking._id.toString(),
+      bookingReference: booking.bookingReference,
+      parkingLotId: lotIdStr,
+      customerId: (customer as any)?._id ? (customer as any)._id.toString() : '',
+      bookingStatus: booking.bookingStatus,
+      paymentStatus: 'SUCCESSFUL',
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      message: `Exit cash settlement of ₹${totalCashCollected} completed successfully.`,
+      bookingId: booking._id.toString(),
+      bookingReference: booking.bookingReference,
+      totalAmountCollected: totalCashCollected,
+      breakdown: receipt.breakdown,
+      receipt,
+      eligibleForExit: true,
+    };
+  }
+
+  /**
+   * Records failure to collect cash extension at exit, logs an incident, and records the timeline.
+   */
+  public async recordUnpaidCashExtension(params: {
+    staffUserId: string;
+    parkingLotId: string;
+    bookingId: string;
+    notes?: string;
+  }): Promise<{ success: boolean; message: string; incidentId?: string }> {
+    const { staffUserId, parkingLotId, bookingId, notes } = params;
+
+    await this.assertStaffLotAssignment(staffUserId, parkingLotId);
+
+    if (!mongoose.isValidObjectId(bookingId)) {
+      throw new AppError('Invalid booking ID.', 400, 'INVALID_BOOKING_ID');
+    }
+
+    const booking = await (BookingModel as mongoose.Model<Booking>).findById(bookingId);
+    if (!booking) {
+      throw new AppError('Booking not found.', 404, 'BOOKING_NOT_FOUND');
+    }
+
+    const payment = await (PaymentModel as mongoose.Model<Payment>).findOne({
+      bookingId: booking._id,
+      paymentTypeCode: 'EXTENSION',
+      paymentMethod: 'CASH',
+      paymentStatus: 'PENDING',
+    });
+
+    if (!payment) {
+      throw new AppError('No pending cash extension payment found.', 404, 'NO_PENDING_CASH_EXTENSION');
+    }
+
+    const staffUser = await (UserModel as mongoose.Model<User>).findById(staffUserId).lean().exec();
+    const staffName = staffUser?.fullName || 'Security Staff';
+
+    const incidentCount = await (IncidentModel as any).countDocuments({ parkingLotId: booking.parkingLotId });
+    const incidentReference = `INC-${Date.now().toString(36).toUpperCase()}-${String(incidentCount + 1).padStart(3, '0')}`;
+
+    const incident = await (IncidentModel as any).create({
+      incidentReference,
+      parkingLotId: booking.parkingLotId,
+      bookingId: booking._id,
+      vehicleId: booking.vehicleId,
+      customerId: booking.customerId,
+      reportedBy: new mongoose.Types.ObjectId(staffUserId),
+      incidentSource: 'Security Staff',
+      incidentType: 'Customer Dispute / Non-Payment',
+      severity: 'Medium',
+      incidentStatus: 'Open',
+      title: `Unpaid Cash Extension - Booking ${booking.bookingReference}`,
+      description: `Customer arrived at exit gate but was unable or refused to pay ₹${payment.amount} for booking extension. Staff notes: ${notes || 'Payment not collected'}. Vehicle exit held.`,
+      attachments: [],
+      location: 'Exit Gate',
+    });
+
+    // Record timeline
+    await (BookingTimelineModel as any).create({
+      bookingId: booking._id,
+      performedBy: new mongoose.Types.ObjectId(staffUserId),
+      eventCode: 'PAYMENT_FAILED',
+      eventType: 'Payment Failed',
+      eventTitle: 'Extension Cash Payment Unpaid at Exit',
+      eventDescription: `Customer did not pay ₹${payment.amount} for booking extension. Incident ${incidentReference} filed by ${staffName}.`,
+      eventSource: 'Security Staff',
+      eventTime: new Date(),
+      metadata: {
+        incidentId: incident._id,
+        amount: payment.amount,
+      },
+    });
+
+    return {
+      success: true,
+      message: 'Unpaid cash extension recorded and incident report filed.',
+      incidentId: incident._id.toString(),
     };
   }
 
@@ -2066,6 +3039,12 @@ class SecurityService {
 
     await this.assertStaffLotAssignment(staffUserId, parkingLotId);
 
+    try {
+      await customerBookingService.reconcileBookingStatuses();
+    } catch {
+      // Non-blocking
+    }
+
     const safePage = Math.max(1, Number(page) || 1);
     const safeLimit = Math.min(50, Math.max(1, Number(limit) || 10));
     const skip = (safePage - 1) * safeLimit;
@@ -2171,23 +3150,33 @@ class SecurityService {
       const zone = b.zoneId || {};
       const lot = b.parkingLotId || {};
 
-      const scheduledExit = new Date(b.scheduledExitTime);
-      const isOverstayStatus = b.bookingStatus === 'Overstay';
-      const isPotentialOverstay =
-        b.bookingStatus === 'Active' &&
-        now.getTime() > scheduledExit.getTime() + (b.gracePeriodMinutes || 15) * 60 * 1000;
-      const isOverstay = isOverstayStatus || isPotentialOverstay;
+      let scheduledExit = new Date(b.scheduledExitTime);
+      if (Array.isArray(b.extensions)) {
+        for (const ext of b.extensions) {
+          if (ext && ext.newScheduledExitTime) {
+            const extDate = new Date(ext.newScheduledExitTime);
+            if (!isNaN(extDate.getTime()) && extDate.getTime() > scheduledExit.getTime()) {
+              scheduledExit = extDate;
+            }
+          }
+        }
+      }
+      const isPastExit = now.getTime() > scheduledExit.getTime();
+      const isOverstay =
+        (b.bookingStatus === 'Active' || b.bookingStatus === 'Overstay') &&
+        !b.actualExitTime &&
+        (b.bookingStatus === 'Overstay' || isPastExit);
 
       let overstayDurationMinutes = 0;
       let overstayCharge = 0;
       if (isOverstay) {
         overstayDurationMinutes = Math.max(
-          1,
+          b.overstayDurationMinutes || 1,
           Math.ceil((now.getTime() - scheduledExit.getTime()) / (60 * 1000)),
         );
         const billableHours = Math.max(1, Math.ceil(overstayDurationMinutes / 60));
         const ratePerHour = b.overstayRateAtBooking || b.parkingRateAtBooking || 0;
-        overstayCharge = b.overstayCharge || Math.round(billableHours * ratePerHour);
+        overstayCharge = Math.max(b.overstayCharge || 0, Math.round(billableHours * ratePerHour));
       }
 
       const bookingPayments = paymentMap.get(b._id.toString()) || [];
@@ -2196,6 +3185,12 @@ class SecurityService {
       );
       const overstayPayment = bookingPayments.find(
         (p) => p.paymentTypeCode === 'OVERSTAY' || p.paymentType === 'Overstay Charges',
+      );
+      const pendingCashExtension = bookingPayments.find(
+        (p) =>
+          p.paymentTypeCode === 'EXTENSION' &&
+          p.paymentMethod === 'CASH' &&
+          p.paymentStatus === 'PENDING',
       );
 
       let overstayPaymentStatus: 'NOT_APPLICABLE' | 'UNPAID' | 'PAID' = 'NOT_APPLICABLE';
@@ -2211,13 +3206,15 @@ class SecurityService {
       const canCompleteExit =
         (b.bookingStatus === 'Active' || b.bookingStatus === 'Overstay') &&
         !b.actualExitTime &&
-        overstayPaymentStatus !== 'UNPAID';
+        overstayPaymentStatus !== 'UNPAID' &&
+        !pendingCashExtension;
       const canRejectExit =
         (b.bookingStatus === 'Active' || b.bookingStatus === 'Overstay') && !b.actualExitTime;
       const canCollectCash =
         (b.bookingStatus === 'Active' || b.bookingStatus === 'Overstay') &&
         overstayPaymentStatus === 'UNPAID' &&
         overstayCharge > 0;
+      const canCollectExtensionCash = Boolean(pendingCashExtension);
 
       return {
         bookingId: b._id.toString(),
@@ -2276,7 +3273,17 @@ class SecurityService {
           canCompleteExit,
           canRejectExit,
           canCollectCash,
+          canCollectExtensionCash,
         },
+        pendingCashExtension: pendingCashExtension
+          ? {
+              paymentId: (pendingCashExtension._id as any).toString(),
+              paymentReference: pendingCashExtension.paymentReference,
+              amount: pendingCashExtension.amount,
+              durationMinutes: (pendingCashExtension.metadata as any)?.additionalMinutes || 0,
+              requestedAt: (pendingCashExtension as any).createdAt,
+            }
+          : null,
       };
     });
 
@@ -2615,12 +3622,20 @@ class SecurityService {
       .lean()
       .exec();
 
-    // Query eligible slots
+    const lotDoc = await (ParkingLotModel as mongoose.Model<ParkingLot>)
+      .findById(lotObjectId)
+      .lean()
+      .exec();
+
+    // Query eligible slots (regular compatible + overflow bays)
     const slots = await (ParkingSlotModel as any)
       .find({
         parkingLotId: lotObjectId,
         slotStatus: { $ne: 'Under Maintenance' },
-        supportedVehicleType: { $in: allowedTypes },
+        $or: [
+          { supportedVehicleType: { $in: allowedTypes } },
+          { isOverflow: true },
+        ],
       })
       .sort({ slotNumber: 1 })
       .lean()
@@ -2663,11 +3678,23 @@ class SecurityService {
       });
     }
 
+    const maxOverflowCap = lotDoc?.overflowCapacity ?? 0;
+    const overflowSlotsList = slots.filter((s: any) => s.isOverflow);
+    const activeOverflowConflicts = overflowSlotsList.filter((s: any) =>
+      conflictSlotIdSet.has((s._id as mongoose.Types.ObjectId).toString()),
+    ).length;
+    const overflowRemaining = Math.max(0, maxOverflowCap - activeOverflowConflicts);
+
     const availableSlots: WalkInSlotInfo[] = [];
 
     for (const slot of slots) {
       const slotIdStr = (slot._id as mongoose.Types.ObjectId).toString();
       if (conflictSlotIdSet.has(slotIdStr)) continue;
+
+      const isSlotOverflow = Boolean(slot.isOverflow);
+      if (isSlotOverflow && (maxOverflowCap <= 0 || overflowRemaining <= 0)) {
+        continue;
+      }
 
       const floorInfo = floorMap.get(slot.floorId.toString()) || {
         floorName: 'Ground Floor',
@@ -2690,8 +3717,21 @@ class SecurityService {
         zoneName: zoneInfo.zoneName,
         supportedVehicleType: slot.supportedVehicleType,
         isAvailable: true,
+        isOverflow: isSlotOverflow,
       });
     }
+
+    // Strict priority: regular compatible slots first, overflow slots as fallback
+    availableSlots.sort((a, b) => {
+      if (!a.isOverflow && b.isOverflow) return -1;
+      if (a.isOverflow && !b.isOverflow) return 1;
+      return a.slotNumber.localeCompare(b.slotNumber);
+    });
+
+    const recommendedSlot =
+      availableSlots.find((s) => !s.isOverflow) ||
+      availableSlots.find((s) => s.isOverflow) ||
+      null;
 
     // Group available slots by Floor and Zone
     const groupedFloorMap = new Map<
@@ -2749,7 +3789,7 @@ class SecurityService {
       scheduledEntryTime: entryDate.toISOString(),
       scheduledExitTime: exitDate.toISOString(),
       totalAvailableCount: availableSlots.length,
-      recommendedSlot: availableSlots[0] || null,
+      recommendedSlot,
       availableSlots,
       groupedByFloor,
     };
@@ -2820,8 +3860,13 @@ class SecurityService {
     }
 
     const baseAmount = Math.ceil(hourlyRate * duration);
+    const settings = await (SystemSettingsModel as unknown as mongoose.Model<SystemSettings>)
+      .findOne({ singletonKey: 'GLOBAL' })
+      .lean()
+      .exec();
+    const platformBookingFee = Math.max(0, settings?.platformBookingFee ?? 0);
     const additionalCharges = 0;
-    const totalAmount = baseAmount + additionalCharges;
+    const totalAmount = baseAmount + additionalCharges + platformBookingFee;
 
     return {
       parkingLotId,
@@ -2829,6 +3874,7 @@ class SecurityService {
       durationHours: duration,
       hourlyRate,
       baseAmount,
+      platformBookingFee,
       additionalCharges,
       totalAmount,
       scheduledEntryTime: scheduledEntryTime.toISOString(),
@@ -2958,14 +4004,14 @@ class SecurityService {
 
       const activeBooking = await (BookingModel as mongoose.Model<Booking>).findOne({
         vehicleId: vehicle._id,
-        bookingStatus: { $in: ['Active', 'Overstay'] },
+        bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
       }).exec();
 
       if (activeBooking) {
         throw new AppError(
-          `Vehicle ${cleanVehicleNumber} is already inside a parking facility (Booking: ${activeBooking.bookingReference}). Double entry is prevented.`,
-          409,
-          'VEHICLE_ALREADY_INSIDE',
+          `Vehicle ${cleanVehicleNumber} already has an active booking (${activeBooking.bookingReference}) with status "${activeBooking.bookingStatus}". Only one active booking is allowed per vehicle.`,
+          400,
+          'VEHICLE_HAS_ACTIVE_BOOKING',
         );
       }
     }
@@ -3014,6 +4060,53 @@ class SecurityService {
 
       if (conflict) {
         throw new AppError('Selected slot is already reserved or occupied for this time window.', 409, 'SLOT_UNAVAILABLE');
+      }
+
+      // Check overflow allocation rule: Regular slots must be prioritized first
+      if (requestedSlot.isOverflow) {
+        const allowedTypes = [vehicleType.trim()];
+        if (vehicleType.trim().toLowerCase() === 'car') {
+          allowedTypes.push('Car', 'SUV');
+        }
+
+        const regularCompatibleSlots = await (ParkingSlotModel as any)
+          .find({
+            parkingLotId: lot._id,
+            slotStatus: { $ne: 'Under Maintenance' },
+            supportedVehicleType: { $in: allowedTypes },
+            $or: [{ isOverflow: false }, { isOverflow: { $exists: false } }],
+          })
+          .select('_id slotNumber')
+          .lean()
+          .exec();
+
+        if (regularCompatibleSlots.length > 0) {
+          const regularIds = regularCompatibleSlots.map((s: any) => s._id);
+          const regularConflicts = await (BookingModel as mongoose.Model<Booking>)
+            .find({
+              parkingLotId: lot._id,
+              currentSlotId: { $in: regularIds },
+              bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+              scheduledEntryTime: { $lt: exitDate },
+              scheduledExitTime: { $gt: entryDate },
+            })
+            .select('currentSlotId')
+            .lean()
+            .exec();
+
+          const conflictSet = new Set(regularConflicts.map((c) => c.currentSlotId.toString()));
+          const freeRegular = regularCompatibleSlots.filter(
+            (s: any) => !conflictSet.has(s._id.toString()),
+          );
+
+          if (freeRegular.length > 0) {
+            throw new AppError(
+              `Regular parking bay ${freeRegular[0].slotNumber} is available. Overflow bays are only allocated when regular bays are full.`,
+              400,
+              'REGULAR_SLOTS_AVAILABLE',
+            );
+          }
+        }
       }
 
       targetSlot = requestedSlot;
@@ -3071,6 +4164,20 @@ class SecurityService {
           throw new AppError('Slot conflict detected during atomic allocation. Please retry.', 409, 'SLOT_CONFLICT');
         }
 
+        // Check for active booking on vehicle inside transaction
+        const vehicleActiveBooking = await (BookingModel as mongoose.Model<Booking>).findOne({
+          vehicleId: vehicle!._id,
+          bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+        }).session(session).exec();
+
+        if (vehicleActiveBooking) {
+          throw new AppError(
+            `Vehicle ${cleanVehicleNumber} already has an active booking (${vehicleActiveBooking.bookingReference}). Only one active booking is allowed per vehicle.`,
+            409,
+            'VEHICLE_HAS_ACTIVE_BOOKING',
+          );
+        }
+
         // Record Cash Payment as SUCCESSFUL
         const [paymentDoc] = await (PaymentModel as any).create(
           [
@@ -3083,6 +4190,7 @@ class SecurityService {
               paymentMethod: 'CASH',
               paymentStatus: 'SUCCESSFUL',
               amount: tariff.totalAmount,
+              platformBookingFee: tariff.platformBookingFee ?? 0,
               paymentDate: new Date(),
               remarks: `Walk-in cash collected by Security Staff ${staffUser.fullName} (${staffUser._id}). Notes: ${staffNotes || 'None'}`,
             },
@@ -3091,7 +4199,8 @@ class SecurityService {
         );
         savedPayment = paymentDoc;
 
-        // Create Booking as Active directly (Vehicle checked in directly at barrier)
+        // Create Booking as Confirmed. The vehicle must still scan the receipt QR at the entry
+        // gate, then at the bay barrier, before the slot becomes Occupied.
         const checkInTime = new Date();
         const [bookingDoc] = await (BookingModel as any).create(
           [
@@ -3105,17 +4214,15 @@ class SecurityService {
               originalSlotId: targetSlot!._id,
               currentSlotId: targetSlot!._id,
               bookingType: 'WALK_IN',
-              bookingStatus: 'Active',
+              bookingStatus: 'Confirmed',
               scheduledEntryTime: entryDate,
               scheduledExitTime: exitDate,
-              actualEntryTime: checkInTime,
-              entryMethod: 'Walk-in Direct Entry',
-              entryVerifiedBy: staffUser._id,
               gracePeriodMinutes: lot.gracePeriodMinutes ?? 15,
               bookingDurationMinutes: tariff.durationHours * 60,
               parkingRateAtBooking: tariff.hourlyRate,
               overstayRateAtBooking: Math.round(tariff.hourlyRate * 1.5),
               baseAmount: tariff.baseAmount,
+              platformBookingFee: tariff.platformBookingFee ?? 0,
               additionalCharges: tariff.additionalCharges,
               totalAmount: tariff.totalAmount,
               qrCode: qrPayload,
@@ -3129,47 +4236,11 @@ class SecurityService {
         savedPayment.bookingId = bookingDoc._id as mongoose.Types.ObjectId;
         await savedPayment.save({ session });
 
-        // Update slot status directly to Occupied (vehicle is checked in directly)
-        targetSlot!.slotStatus = 'Occupied';
+        // Slot stays Reserved until the vehicle scans at the entry gate and then the bay barrier
+        targetSlot!.slotStatus = 'Reserved';
         targetSlot!.currentBookingId = bookingDoc._id as mongoose.Types.ObjectId;
         await targetSlot!.save({ session });
 
-        // Update ParkingLot counters
-        if (lot.availableSlots !== undefined && lot.availableSlots > 0) {
-          lot.availableSlots -= 1;
-        }
-        lot.occupiedSlots = (lot.occupiedSlots || 0) + 1;
-        await lot.save({ session });
-
-        // Create VehicleMovementLog record directly for this active entry
-        const graceEnds =
-          new Date(exitDate.getTime() + (lot.gracePeriodMinutes ?? 15) * 60 * 1000);
-
-        await (VehicleMovementLogModel as any).create(
-          [
-            {
-              bookingId: bookingDoc._id,
-              customerId: customerUser!._id,
-              vehicleId: vehicle!._id,
-              parkingLotId: lot._id,
-              floorId: floor._id,
-              zoneId: zone._id,
-              slotId: targetSlot!._id,
-              verifiedBy: staffUser._id,
-              entryMethod: 'Walk-in',
-              entryTime: checkInTime,
-              gracePeriodEndsAt: graceEnds,
-              stayDurationMinutes: 0,
-              overstayMinutes: 0,
-              movementStatus: 'Vehicle Inside',
-              vehicleNumberSnapshot: cleanVehicleNumber,
-              remarks: `Walk-in customer registered and vehicle checked in directly by ${staffUser.fullName}. Cash ₹${tariff.totalAmount} collected. Barrier cleared.`,
-            },
-          ],
-          { session, ordered: true },
-        );
-
-        // Create Timeline events: 1) Created, 2) Direct Entry Check-in
         await (BookingTimelineModel as any).create(
           [
             {
@@ -3178,17 +4249,7 @@ class SecurityService {
               eventType: 'Walk-in Booking Created',
               eventCode: 'WALK_IN_BOOKING_CREATED',
               eventTitle: 'Walk-in Booking Registered & Cash Collected',
-              eventDescription: `Security Staff ${staffUser.fullName} registered walk-in booking ${bookingReference} with Cash payment ₹${tariff.totalAmount}. Bay ${targetSlot!.slotNumber} allocated.`,
-              performedBy: staffUser._id,
-              eventTime: checkInTime,
-            },
-            {
-              bookingId: bookingDoc._id,
-              eventSource: 'Security Staff',
-              eventType: 'Vehicle Entered',
-              eventCode: 'VEHICLE_ENTERED',
-              eventTitle: 'Vehicle Checked In Directly at Gate',
-              eventDescription: `Vehicle ${cleanVehicleNumber} checked in directly at gate barrier by ${staffUser.fullName} without QR re-verification. Slot ${targetSlot!.slotNumber} marked Occupied.`,
+              eventDescription: `Security Staff ${staffUser.fullName} registered walk-in booking ${bookingReference} with Cash payment ₹${tariff.totalAmount}. Bay ${targetSlot!.slotNumber} reserved; awaiting QR scan at entry gate.`,
               performedBy: staffUser._id,
               eventTime: checkInTime,
             },
@@ -3203,8 +4264,8 @@ class SecurityService {
               userId: staffUser._id,
               actionCode: 'WALK_IN_BOOKING_CHECKED_IN',
               module: 'Security',
-              actionTitle: 'Walk-in Booking Registered & Checked In Directly',
-              description: `Walk-in vehicle ${cleanVehicleNumber} checked in directly at bay ${targetSlot!.slotNumber} with cash payment ₹${tariff.totalAmount}.`,
+              actionTitle: 'Walk-in Booking Registered',
+              description: `Walk-in vehicle ${cleanVehicleNumber} booked bay ${targetSlot!.slotNumber} with cash payment ₹${tariff.totalAmount}. Awaiting entry gate scan.`,
               targetCollection: 'bookings',
               targetDocumentId: bookingDoc._id,
               actionStatus: 'Success',
@@ -3231,7 +4292,7 @@ class SecurityService {
       zoneId: zone._id.toString(),
       slotId: targetSlot!._id.toString(),
       slotNumber: targetSlot!.slotNumber,
-      slotStatus: 'Occupied',
+      slotStatus: 'Reserved',
       timestamp: new Date().toISOString(),
     });
 
@@ -3240,7 +4301,7 @@ class SecurityService {
       bookingReference: savedBooking!.bookingReference,
       parkingLotId,
       customerId: customerUser._id.toString(),
-      bookingStatus: 'Active',
+      bookingStatus: 'Confirmed',
       paymentStatus: 'SUCCESSFUL',
       timestamp: new Date().toISOString(),
     });
@@ -3283,19 +4344,20 @@ class SecurityService {
 
     return {
       success: true,
-      message: 'Walk-in cash booking registered and vehicle checked in directly. Barrier cleared and bay occupied.',
+      message: 'Walk-in cash booking registered. Bay reserved — customer must scan the QR at the entry gate, then at the bay barrier.',
       receiptNumber: `REC-${bookingReference}`,
       booking: {
         bookingId: savedBooking!._id.toString(),
         bookingReference: savedBooking!.bookingReference,
         bookingType: 'WALK_IN',
-        bookingStatus: 'Active',
+        bookingStatus: 'Confirmed',
         scheduledEntryTime: entryDate.toISOString(),
         scheduledExitTime: exitDate.toISOString(),
-        actualEntryTime: (savedBooking as any).actualEntryTime?.toISOString() || new Date().toISOString(),
+        actualEntryTime: null,
         durationHours: tariff.durationHours,
         durationMinutes: tariff.durationHours * 60,
         hourlyRate: tariff.hourlyRate,
+        platformBookingFee: tariff.platformBookingFee ?? 0,
         totalAmount: tariff.totalAmount,
         gracePeriodMinutes: lot.gracePeriodMinutes ?? 15,
         createdAt: (savedBooking as any).createdAt ? (savedBooking as any).createdAt.toISOString() : new Date().toISOString(),
@@ -3335,10 +4397,368 @@ class SecurityService {
         paymentStatus: 'SUCCESSFUL',
         paymentType: 'Parking Booking',
         amount: tariff.totalAmount,
+        platformBookingFee: tariff.platformBookingFee ?? 0,
         paymentDate: new Date().toISOString(),
       },
       qrPayload,
       qrCodeDataUrl,
+    };
+  }
+
+  /**
+   * Calculates extension quote and validates eligibility for Walk-in booking extensions.
+   */
+  public async getWalkInExtensionQuote(params: {
+    staffUserId: string;
+    parkingLotId: string;
+    bookingId: string;
+    additionalMinutes: number;
+  }): Promise<WalkInExtensionQuoteResult> {
+    const { staffUserId, parkingLotId, bookingId, additionalMinutes } = params;
+
+    await this.assertStaffLotAssignment(staffUserId, parkingLotId);
+
+    if (!mongoose.isValidObjectId(bookingId)) {
+      throw new AppError('Invalid booking ID.', 400, 'INVALID_BOOKING_ID');
+    }
+
+    if (!additionalMinutes || additionalMinutes <= 0 || additionalMinutes > 720) {
+      throw new AppError('Additional duration must be between 15 and 720 minutes (12 hours).', 400, 'INVALID_DURATION');
+    }
+
+    const booking = await (BookingModel as mongoose.Model<Booking>).findById(bookingId);
+    if (!booking) {
+      throw new AppError('Booking not found.', 404, 'BOOKING_NOT_FOUND');
+    }
+
+    if (booking.parkingLotId.toString() !== parkingLotId) {
+      throw new AppError('This booking is not assigned to this facility.', 403, 'WRONG_PARKING_LOT');
+    }
+
+    if (booking.bookingType !== 'WALK_IN') {
+      throw new AppError('This function is reserved for walk-in bookings. Online bookings must be extended via Customer portal.', 400, 'NOT_A_WALK_IN_BOOKING');
+    }
+
+    if (booking.bookingStatus !== 'Active') {
+      throw new AppError(`Cannot extend booking with status '${booking.bookingStatus}'. Only Active bookings can be extended.`, 400, 'BOOKING_NOT_ACTIVE');
+    }
+
+    const lot = await (ParkingLotModel as mongoose.Model<ParkingLot>).findById(parkingLotId).lean();
+    if (!lot) {
+      throw new AppError('Parking lot not found.', 404, 'LOT_NOT_FOUND');
+    }
+
+    const currentExitTime = new Date(booking.scheduledExitTime);
+    const proposedExitTime = new Date(currentExitTime.getTime() + additionalMinutes * 60 * 1000);
+
+    // Validate facility operating hours
+    if (!lot.isOpen24Hours && lot.openingTime && lot.closingTime) {
+      try {
+        customerBookingService.validateOperatingHoursWindow(
+          booking.scheduledEntryTime,
+          proposedExitTime,
+          {
+            isOpen24x7: false,
+            openingTime: lot.openingTime,
+            closingTime: lot.closingTime,
+          },
+        );
+      } catch (err: unknown) {
+        return {
+          eligible: false,
+          bookingId: booking._id.toString(),
+          bookingReference: booking.bookingReference,
+          currentExitTime: currentExitTime.toISOString(),
+          proposedExitTime: proposedExitTime.toISOString(),
+          additionalMinutes,
+          extensionCharge: 0,
+          ratePerHour: booking.parkingRateAtBooking || (lot as any).hourlyRate || 0,
+          reason: err instanceof Error ? err.message : 'Extension exceeds facility operating hours.',
+        };
+      }
+    }
+
+    // Check slot conflict with next booking
+    const slotId = booking.currentSlotId;
+    const exitGracePeriod = booking.gracePeriodMinutes || lot.gracePeriodMinutes || 15;
+    const requiredSlotFreeUntil = new Date(proposedExitTime.getTime() + exitGracePeriod * 60 * 1000);
+
+    const conflictingBooking = await (BookingModel as mongoose.Model<Booking>).findOne({
+      _id: { $ne: booking._id },
+      currentSlotId: slotId,
+      bookingStatus: { $in: ['Confirmed', 'Active'] },
+      scheduledEntryTime: { $lt: requiredSlotFreeUntil },
+      scheduledExitTime: { $gt: currentExitTime },
+    });
+
+    if (conflictingBooking) {
+      return {
+        eligible: false,
+        bookingId: booking._id.toString(),
+        bookingReference: booking.bookingReference,
+        currentExitTime: currentExitTime.toISOString(),
+        proposedExitTime: proposedExitTime.toISOString(),
+        additionalMinutes,
+        extensionCharge: 0,
+        ratePerHour: booking.parkingRateAtBooking || (lot as any).hourlyRate || 0,
+        reason: 'This parking bay is already booked by another customer immediately following this session.',
+      };
+    }
+
+    // Calculate charge
+    const billableHours = Math.ceil(additionalMinutes / 60);
+    const ratePerHour = booking.parkingRateAtBooking || (lot as any).hourlyRate || 0;
+    const extensionCharge = Math.round(billableHours * ratePerHour);
+
+    return {
+      eligible: true,
+      bookingId: booking._id.toString(),
+      bookingReference: booking.bookingReference,
+      currentExitTime: currentExitTime.toISOString(),
+      proposedExitTime: proposedExitTime.toISOString(),
+      additionalMinutes,
+      extensionCharge,
+      ratePerHour,
+    };
+  }
+
+  /**
+   * Processes a Walk-in extension: verifies atomic availability, creates successful cash Payment,
+   * updates booking duration & exit time, adds extension entry, records timeline and audit log.
+   */
+  public async processWalkInExtension(params: {
+    staffUserId: string;
+    parkingLotId: string;
+    bookingId: string;
+    additionalMinutes: number;
+    amountCollected: number;
+    confirmCashReceived: boolean;
+    notes?: string;
+  }): Promise<ProcessWalkInExtensionResult> {
+    const {
+      staffUserId,
+      parkingLotId,
+      bookingId,
+      additionalMinutes,
+      amountCollected,
+      confirmCashReceived,
+      notes,
+    } = params;
+
+    await this.assertStaffLotAssignment(staffUserId, parkingLotId);
+
+    if (!confirmCashReceived) {
+      throw new AppError('Explicit confirmation of cash collection is required.', 400, 'CASH_NOT_CONFIRMED');
+    }
+
+    const quote = await this.getWalkInExtensionQuote({
+      staffUserId,
+      parkingLotId,
+      bookingId,
+      additionalMinutes,
+    });
+
+    if (!quote.eligible) {
+      throw new AppError(quote.reason || 'Booking extension is not eligible.', 400, 'EXTENSION_INELIGIBLE');
+    }
+
+    if (amountCollected !== quote.extensionCharge) {
+      throw new AppError(
+        `Amount collected (₹${amountCollected}) does not match required fee (₹${quote.extensionCharge}).`,
+        400,
+        'AMOUNT_MISMATCH',
+      );
+    }
+
+    const session = await mongoose.startSession();
+    let resultBooking: any = null;
+    let paymentRef = '';
+
+    try {
+      await session.withTransaction(async () => {
+        const booking = await (BookingModel as mongoose.Model<Booking>)
+          .findById(bookingId)
+          .session(session)
+          .exec();
+
+        if (!booking) {
+          throw new AppError('Booking not found.', 404, 'BOOKING_NOT_FOUND');
+        }
+
+        // Re-check conflict inside transaction
+        const currentExitTime = new Date(booking.scheduledExitTime);
+        const proposedExitTime = new Date(currentExitTime.getTime() + additionalMinutes * 60 * 1000);
+        const exitGracePeriod = booking.gracePeriodMinutes || 15;
+        const requiredSlotFreeUntil = new Date(proposedExitTime.getTime() + exitGracePeriod * 60 * 1000);
+
+        const conflictingBooking = await (BookingModel as mongoose.Model<Booking>)
+          .findOne({
+            _id: { $ne: booking._id },
+            currentSlotId: booking.currentSlotId,
+            bookingStatus: { $in: ['Confirmed', 'Active'] },
+            scheduledEntryTime: { $lt: requiredSlotFreeUntil },
+            scheduledExitTime: { $gt: currentExitTime },
+          })
+          .session(session)
+          .exec();
+
+        if (conflictingBooking) {
+          throw new AppError('Bay has just been reserved by another driver. Extension cannot be completed.', 409, 'SLOT_CONFLICT');
+        }
+
+        const lot = await (ParkingLotModel as mongoose.Model<ParkingLot>)
+          .findById(parkingLotId)
+          .session(session)
+          .lean()
+          .exec();
+
+        const staffUser = await (UserModel as mongoose.Model<User>)
+          .findById(staffUserId)
+          .session(session)
+          .lean()
+          .exec();
+
+        const staffName = staffUser?.fullName || 'Security Staff';
+        paymentRef = this.generatePaymentReference();
+        const extensionRef = `EXT-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+
+        // Create Payment record
+        const paymentDocs: any = await (PaymentModel as any).create(
+          [
+            {
+              paymentReference: paymentRef,
+              bookingId: booking._id,
+              customerId: booking.customerId,
+              ownerId: lot?.ownerId || null,
+              parkingLotId: booking.parkingLotId,
+              paymentType: 'Parking Booking Extension',
+              paymentTypeCode: 'EXTENSION',
+              paymentMethod: 'CASH',
+              paymentStatus: 'SUCCESSFUL',
+              amount: quote.extensionCharge,
+              platformBookingFee: 0,
+              additionalCharges: 0,
+              refundAmount: 0,
+              collectedBy: new mongoose.Types.ObjectId(staffUserId),
+              cashConfirmedAt: new Date(),
+              paymentDate: new Date(),
+              remarks: `Walk-in extension cash collected by ${staffName}. Notes: ${notes || 'None'}`,
+              metadata: {
+                extensionReference: extensionRef,
+                additionalMinutes,
+                walkIn: true,
+              },
+            },
+          ],
+          { session },
+        );
+
+        const paymentDoc = paymentDocs[0];
+
+        // Update booking
+        if (!booking.originalScheduledExitTime) {
+          booking.originalScheduledExitTime = booking.scheduledExitTime;
+        }
+
+        const prevExit = new Date(booking.scheduledExitTime);
+        const newExit = proposedExitTime;
+
+        booking.scheduledExitTime = newExit;
+        booking.bookingDurationMinutes = (booking.bookingDurationMinutes || 60) + additionalMinutes;
+        booking.additionalCharges = (booking.additionalCharges || 0) + quote.extensionCharge;
+        booking.totalAmount = (booking.totalAmount || 0) + quote.extensionCharge;
+
+        if (!booking.extensions) {
+          (booking as any).extensions = [];
+        }
+
+        (booking.extensions as any).push({
+          extensionReference: extensionRef,
+          extensionDurationMinutes: additionalMinutes,
+          previousScheduledExitTime: prevExit,
+          newScheduledExitTime: newExit,
+          extensionAmount: quote.extensionCharge,
+          paymentMethod: 'CASH',
+          paymentStatus: 'SUCCESSFUL',
+          paymentReference: paymentRef,
+          paymentId: paymentDoc._id,
+          status: 'CONFIRMED',
+          requestedAt: new Date(),
+          confirmedAt: new Date(),
+          cashCollectedAt: new Date(),
+          cashCollectedBy: new mongoose.Types.ObjectId(staffUserId),
+          notes: notes || undefined,
+        });
+
+        await booking.save({ session });
+        resultBooking = booking;
+
+        // Record timeline
+        await (BookingTimelineModel as any).create(
+          [
+            {
+              bookingId: booking._id,
+              performedBy: new mongoose.Types.ObjectId(staffUserId),
+              eventCode: 'BOOKING_EXTENDED',
+              eventType: 'Booking Extended',
+              eventTitle: 'Walk-in Booking Extended & Cash Collected',
+              eventDescription: `Security staff ${staffName} extended walk-in booking by ${additionalMinutes} mins until ${newExit.toLocaleTimeString()} with Cash ₹${quote.extensionCharge}.`,
+              eventSource: 'Security Staff',
+              eventTime: new Date(),
+              metadata: {
+                extensionReference: extensionRef,
+                paymentReference: paymentRef,
+                additionalMinutes,
+                amount: quote.extensionCharge,
+              },
+            },
+          ],
+          { session },
+        );
+
+        // Record audit log
+        await (AuditLogModel as any).create(
+          [
+            {
+              userId: new mongoose.Types.ObjectId(staffUserId),
+              actionCode: 'WALK_IN_BOOKING_EXTENDED',
+              module: 'Security',
+              actionTitle: 'Walk-in Booking Extended at Gate',
+              description: `Walk-in booking ${booking.bookingReference} extended by ${additionalMinutes} mins. Cash ₹${quote.extensionCharge} collected.`,
+              targetCollection: 'bookings',
+              targetDocumentId: booking._id,
+              actionStatus: 'Success',
+            },
+          ],
+          { session },
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    // Emit socket event
+    emitBookingStatusUpdate({
+      bookingId: resultBooking._id.toString(),
+      bookingReference: resultBooking.bookingReference,
+      parkingLotId,
+      customerId: resultBooking.customerId.toString(),
+      bookingStatus: resultBooking.bookingStatus,
+      paymentStatus: 'SUCCESSFUL',
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      message: `Walk-in booking extended successfully by ${additionalMinutes} minutes. Cash received.`,
+      receiptNumber: `REC-${resultBooking.bookingReference}-EXT`,
+      bookingId: resultBooking._id.toString(),
+      bookingReference: resultBooking.bookingReference,
+      previousExitTime: quote.currentExitTime,
+      newExitTime: quote.proposedExitTime,
+      additionalMinutes,
+      amountPaid: quote.extensionCharge,
+      paymentReference: paymentRef,
     };
   }
 
@@ -3467,6 +4887,17 @@ class SecurityService {
       resolvedAt: inc.resolvedAt || null,
       resolutionNotes: inc.resolutionNotes || null,
       closedAt: inc.closedAt || null,
+      responses: Array.isArray(inc.responses)
+        ? inc.responses.map((r: any) => ({
+            responseId: r.responseId || r._id?.toString(),
+            authorId: r.authorId?._id ? r.authorId._id.toString() : r.authorId?.toString(),
+            authorRole: r.authorRole,
+            authorName: r.authorName,
+            message: r.message,
+            attachments: Array.isArray(r.attachments) ? r.attachments : [],
+            createdAt: r.createdAt || new Date(),
+          }))
+        : [],
       createdAt: inc.createdAt,
       updatedAt: inc.updatedAt,
     }));
@@ -3549,6 +4980,17 @@ class SecurityService {
       resolvedAt: inc.resolvedAt || null,
       resolutionNotes: inc.resolutionNotes || null,
       closedAt: inc.closedAt || null,
+      responses: Array.isArray(inc.responses)
+        ? inc.responses.map((r: any) => ({
+            responseId: r.responseId || r._id?.toString(),
+            authorId: r.authorId?._id ? r.authorId._id.toString() : r.authorId?.toString(),
+            authorRole: r.authorRole,
+            authorName: r.authorName,
+            message: r.message,
+            attachments: Array.isArray(r.attachments) ? r.attachments : [],
+            createdAt: r.createdAt || new Date(),
+          }))
+        : [],
       createdAt: inc.createdAt,
       updatedAt: inc.updatedAt,
     };
@@ -3661,6 +5103,28 @@ class SecurityService {
       actionStatus: 'Success',
     });
 
+    // Notify Parking Owner
+    try {
+      const lot = await (ParkingLotModel as any).findById(parkingLotId).select('ownerId parkingName').lean();
+      if (lot && lot.ownerId) {
+        const notif = await (NotificationModel as any).create({
+          notificationReference: `NOTIF-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+          userId: lot.ownerId,
+          senderId: staffUser._id,
+          notificationType: 'Incident Alert',
+          eventType: 'INCIDENT_REPORTED',
+          title: `New Incident: ${cleanTitle}`,
+          message: `Security staff reported incident ${incidentReference} (${chosenSeverity} severity) at ${lot.parkingName}.`,
+          priority: chosenSeverity === 'Critical' || chosenSeverity === 'High' ? 'Critical' : 'High',
+          actionUrl: `/owner/incidents`,
+          metadata: { incidentId: createdDoc._id.toString(), incidentReference, parkingLotId },
+        });
+        emitNewNotification(lot.ownerId.toString(), notif);
+      }
+    } catch {
+      // Non-blocking notification
+    }
+
     // Emit Socket.IO event
     emitIncidentUpdate({
       incidentId: createdDoc._id.toString(),
@@ -3685,11 +5149,15 @@ class SecurityService {
    * records audit log, and emits socket notification.
    */
   public async updateIncidentStatus(params: UpdateIncidentStatusInput): Promise<SecurityIncidentItem> {
-    const { staffUserId, incidentId, status, resolutionNotes } = params;
+    let { staffUserId, incidentId, status, resolutionNotes } = params;
 
     if (!incidentId || !mongoose.isValidObjectId(incidentId)) {
       throw new AppError('Valid incident ID is required.', 400, 'INVALID_INCIDENT_ID');
     }
+
+    // Map friendly transition status aliases (Pending -> Open, Resolving -> Under Investigation)
+    if ((status as string) === 'Pending') status = 'Open' as any;
+    if ((status as string) === 'Resolving') status = 'Under Investigation' as any;
 
     const allowedStatuses = ['Open', 'Under Investigation', 'Resolved', 'Closed'];
     if (!allowedStatuses.includes(status)) {
@@ -3710,6 +5178,20 @@ class SecurityService {
     }
 
     const prevStatus = inc.incidentStatus;
+
+    if (prevStatus === 'Closed') {
+      throw new AppError('Closed incidents are historically finalized and cannot be modified.', 400, 'INCIDENT_ALREADY_CLOSED');
+    }
+
+    if (status === 'Closed' && prevStatus !== 'Resolved') {
+      throw new AppError('An incident must be marked Resolved before it can be Closed.', 400, 'CANNOT_CLOSE_UNRESOLVED');
+    }
+
+    // Provide seamless default note if security taps directly to resolve
+    if (status === 'Resolved' && (!resolutionNotes || resolutionNotes.trim().length === 0) && !inc.resolutionNotes) {
+      resolutionNotes = 'Resolved by on-site security staff.';
+    }
+
     inc.incidentStatus = status as any;
 
     if (resolutionNotes !== undefined && resolutionNotes.trim().length > 0) {
@@ -3721,9 +5203,6 @@ class SecurityService {
     } else if (status === 'Closed') {
       if (!inc.resolvedAt) inc.resolvedAt = new Date();
       inc.closedAt = new Date();
-    } else {
-      // Reopening incident
-      inc.closedAt = null;
     }
 
     await inc.save();
@@ -3740,6 +5219,28 @@ class SecurityService {
       actionStatus: 'Success',
     });
 
+    // Notify Parking Owner
+    try {
+      const lot = await (ParkingLotModel as any).findById(inc.parkingLotId).select('ownerId parkingName').lean();
+      if (lot && lot.ownerId) {
+        const notif = await (NotificationModel as any).create({
+          notificationReference: `NOTIF-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+          userId: lot.ownerId,
+          senderId: staffUser._id,
+          notificationType: 'Incident Update',
+          eventType: 'INCIDENT_STATUS_UPDATED',
+          title: `Incident ${inc.incidentReference} ${status}`,
+          message: `Incident status updated to ${status} by security staff ${staffUser.fullName}.`,
+          priority: inc.severity === 'Critical' || inc.severity === 'High' ? 'Critical' : 'Normal',
+          actionUrl: `/owner/incidents`,
+          metadata: { incidentId: inc._id.toString(), incidentReference: inc.incidentReference, parkingLotId: lotId },
+        });
+        emitNewNotification(lot.ownerId.toString(), notif);
+      }
+    } catch {
+      // Non-blocking notification
+    }
+
     // Socket notification
     const actionKey: 'RESOLVED' | 'CLOSED' | 'UPDATED' =
       status === 'Resolved' ? 'RESOLVED' : status === 'Closed' ? 'CLOSED' : 'UPDATED';
@@ -3752,6 +5253,113 @@ class SecurityService {
       incidentType: inc.incidentType,
       severity: inc.severity,
       incidentStatus: status,
+      title: inc.title,
+      timestamp: new Date().toISOString(),
+    });
+
+    return this.getIncidentDetail({
+      staffUserId,
+      incidentId: inc._id.toString(),
+    });
+  }
+
+  /**
+   * Adds a response / communication entry to an existing incident by Security Staff.
+   */
+  public async addIncidentResponse(params: {
+    staffUserId: string;
+    incidentId: string;
+    message: string;
+    attachments?: string[];
+  }): Promise<SecurityIncidentItem> {
+    const { staffUserId, incidentId, message, attachments } = params;
+
+    if (!incidentId || !mongoose.isValidObjectId(incidentId)) {
+      throw new AppError('Valid incident ID is required.', 400, 'INVALID_INCIDENT_ID');
+    }
+
+    const cleanMessage = (message || '').trim();
+    if (cleanMessage.length < 1 || cleanMessage.length > 2000) {
+      throw new AppError('Response message must be between 1 and 2000 characters.', 400, 'INVALID_MESSAGE');
+    }
+
+    const inc = await (IncidentModel as any).findById(incidentId).exec();
+    if (!inc) {
+      throw new AppError('Incident report not found.', 404, 'INCIDENT_NOT_FOUND');
+    }
+
+    const lotId = inc.parkingLotId.toString();
+    await this.assertStaffLotAssignment(staffUserId, lotId);
+
+    if (inc.incidentStatus === 'Closed') {
+      throw new AppError('Cannot add response to a closed incident.', 400, 'INCIDENT_ALREADY_CLOSED');
+    }
+
+    const staffUser = await (UserModel as mongoose.Model<User>).findById(staffUserId).lean().exec();
+    if (!staffUser) {
+      throw new AppError('Authenticated staff user not found.', 401, 'STAFF_NOT_FOUND');
+    }
+
+    const newResponse = {
+      responseId: new mongoose.Types.ObjectId().toString(),
+      authorId: staffUser._id,
+      authorRole: 'SECURITY_STAFF',
+      authorName: staffUser.fullName || 'Security Officer',
+      message: cleanMessage,
+      attachments: Array.isArray(attachments) ? attachments : [],
+      createdAt: new Date(),
+    };
+
+    if (!Array.isArray(inc.responses)) {
+      inc.responses = [];
+    }
+    inc.responses.push(newResponse);
+
+    await inc.save();
+
+    // Audit log
+    await (AuditLogModel as any).create({
+      userId: staffUser._id,
+      actionCode: 'INCIDENT_RESPONSE_RECORDED',
+      module: 'Security',
+      actionTitle: `Security Response Added to Incident ${inc.incidentReference}`,
+      description: `Staff ${staffUser.fullName} added a response: "${cleanMessage.slice(0, 80)}..."`,
+      targetCollection: 'incidents',
+      targetDocumentId: inc._id,
+      actionStatus: 'Success',
+    });
+
+    // Notify Parking Lot Owner
+    try {
+      const lot = await (ParkingLotModel as any).findById(inc.parkingLotId).select('ownerId parkingName').lean();
+      if (lot && lot.ownerId) {
+        const notif = await (NotificationModel as any).create({
+          notificationReference: `NOTIF-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+          userId: lot.ownerId,
+          senderId: staffUser._id,
+          notificationType: 'Incident Response',
+          eventType: 'INCIDENT_RESPONSE_RECORDED',
+          title: `Security Response: ${inc.incidentReference}`,
+          message: `Security staff ${staffUser.fullName} responded: "${cleanMessage.slice(0, 100)}..."`,
+          priority: 'Normal',
+          actionUrl: `/owner/incidents`,
+          metadata: { incidentId: inc._id.toString(), incidentReference: inc.incidentReference, parkingLotId: lotId },
+        });
+        emitNewNotification(lot.ownerId.toString(), notif);
+      }
+    } catch {
+      // Non-blocking
+    }
+
+    // Emit Socket.IO update
+    emitIncidentUpdate({
+      incidentId: inc._id.toString(),
+      incidentReference: inc.incidentReference,
+      parkingLotId: lotId,
+      action: 'UPDATED',
+      incidentType: inc.incidentType,
+      severity: inc.severity,
+      incidentStatus: inc.incidentStatus,
       title: inc.title,
       timestamp: new Date().toISOString(),
     });
@@ -3991,12 +5599,20 @@ class SecurityService {
       const vb = log.verifiedBy as any;
       const evb = log.exitVerifiedBy as any;
 
+      let liveOverstayMins = log.overstayMinutes || bk?.overstayDurationMinutes || 0;
+      if (isInside && bk?.scheduledExitTime && Date.now() > new Date(bk.scheduledExitTime).getTime()) {
+        liveOverstayMins = Math.max(
+          liveOverstayMins,
+          Math.ceil((Date.now() - new Date(bk.scheduledExitTime).getTime()) / (60 * 1000)),
+        );
+      }
+
       return {
         _id: log._id.toString(),
         movementReference: mRef,
         bookingId: bk?._id ? bk._id.toString() : log.bookingId?.toString() || '',
         bookingReference: bk?.bookingReference || 'N/A',
-        bookingStatus: bk?.bookingStatus || 'N/A',
+        bookingStatus: isInside && liveOverstayMins > 0 ? 'Overstay' : bk?.bookingStatus || 'N/A',
         bookingType: bk?.bookingType || 'ONLINE',
         customerId: cust?._id ? cust._id.toString() : log.customerId?.toString() || '',
         customerName: cust?.fullName || 'Guest Driver',
@@ -4019,7 +5635,7 @@ class SecurityService {
         slotNumber: slt?.slotNumber || 'Bay',
         slotLabel: slt?.slotLabel || undefined,
         movementType: mType,
-        movementStatus: log.movementStatus,
+        movementStatus: isInside && liveOverstayMins > 0 ? 'Overstayed' : log.movementStatus,
         entryMethod: log.entryMethod,
         entryTime: log.entryTime,
         verifiedByName: vb?.fullName || null,
@@ -4030,7 +5646,7 @@ class SecurityService {
         exitVerifiedById: evb?._id ? evb._id.toString() : null,
         stayDurationMinutes: log.stayDurationMinutes || 0,
         formattedDuration: fDuration,
-        overstayMinutes: log.overstayMinutes || 0,
+        overstayMinutes: liveOverstayMins,
         remarks: log.remarks || null,
         createdAt: log.createdAt,
       };

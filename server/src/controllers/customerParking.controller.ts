@@ -11,8 +11,11 @@ import {
   type CustomerBookingCategory,
   type SupportedVehicleType,
 } from '../services/customerBooking.service.js';
+import { customerReviewService } from '../services/customerReview.service.js';
+import { customerExtensionService } from '../services/customerExtension.service.js';
 import { securityService } from '../services/security.service.js';
 import { AppError } from '../utils/AppError.js';
+import { IncidentModel, BookingModel } from '../models/index.js';
 
 // Resolve uploads root directory dynamically whether running from project root or server dir
 const uploadsRoot = fs.existsSync(path.resolve(process.cwd(), 'server', 'uploads'))
@@ -228,6 +231,27 @@ export async function toggleFavourite(req: AuthenticatedRequest, res: Response):
   }
 
   const status = await customerParkingService.toggleFavourite(userId, id);
+
+  res.status(200).json({
+    success: true,
+    data: status,
+  });
+}
+
+export async function removeFavourite(req: AuthenticatedRequest, res: Response): Promise<void> {
+  const paramId = req.params.id;
+  const id = Array.isArray(paramId) ? paramId[0] : paramId;
+  const userId = req.userId;
+
+  if (!id) {
+    throw new AppError('Parking facility ID is required.', 400, 'ID_REQUIRED');
+  }
+
+  if (!userId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const status = await customerParkingService.removeFavourite(userId, id);
 
   res.status(200).json({
     success: true,
@@ -924,5 +948,385 @@ export async function verifyOverstayPayment(
     message: 'Overstay payment verified successfully.',
     data: result,
   });
+}
+
+/**
+ * Customer Reviews Controllers (Module 2 — Page 11)
+ */
+export async function getCustomerReviews(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  const customerId = req.userId;
+  if (!customerId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const reviews = await customerReviewService.getCustomerReviews(customerId);
+
+  res.status(200).json({
+    success: true,
+    data: reviews,
+  });
+}
+
+export async function getEligibleBookingsForReview(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  const customerId = req.userId;
+  if (!customerId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const bookings = await customerReviewService.getEligibleBookingsForReview(customerId);
+
+  res.status(200).json({
+    success: true,
+    data: bookings,
+  });
+}
+
+export async function submitCustomerReview(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  const customerId = req.userId;
+  if (!customerId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const bookingIdParam = req.params.bookingId;
+  const bookingId = (Array.isArray(bookingIdParam) ? bookingIdParam[0] : bookingIdParam) || req.body.bookingId;
+  const { overallRating, comment } = req.body;
+
+  const review = await customerReviewService.submitReview(customerId, {
+    bookingId,
+    overallRating,
+    comment,
+  });
+
+  res.status(201).json({
+    success: true,
+    message: 'Review submitted successfully.',
+    data: review,
+  });
+}
+
+export async function updateCustomerReview(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  const customerId = req.userId;
+  if (!customerId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const { reviewId } = req.params;
+  const rawReviewId = Array.isArray(reviewId) ? reviewId[0] : reviewId;
+  if (!rawReviewId) {
+    throw new AppError('Review ID is required.', 400, 'INVALID_REVIEW_ID');
+  }
+
+  const { overallRating, comment } = req.body;
+
+  const updatedReview = await customerReviewService.updateReview(customerId, rawReviewId, {
+    overallRating,
+    comment,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Review updated successfully.',
+    data: updatedReview,
+  });
+}
+
+export async function deleteCustomerReview(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  const customerId = req.userId;
+  if (!customerId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const { reviewId } = req.params;
+  const rawReviewId = Array.isArray(reviewId) ? reviewId[0] : reviewId;
+  if (!rawReviewId) {
+    throw new AppError('Review ID is required.', 400, 'INVALID_REVIEW_ID');
+  }
+
+  const result = await customerReviewService.deleteReview(customerId, rawReviewId);
+
+  res.status(200).json({
+    success: true,
+    message: result.message,
+    data: null,
+  });
+}
+
+/**
+ * Customer booking extension quote calculation
+ */
+export async function getCustomerExtensionQuote(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  const customerId = req.userId;
+  if (!customerId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const { bookingId } = req.params;
+  const rawBookingId = Array.isArray(bookingId) ? bookingId[0] : bookingId;
+  const additionalMinutes = Number(req.query.additionalMinutes);
+
+  if (!rawBookingId) {
+    throw new AppError('Booking ID is required.', 400, 'INVALID_BOOKING_ID');
+  }
+
+  if (!additionalMinutes || isNaN(additionalMinutes)) {
+    throw new AppError('Additional duration in minutes is required.', 400, 'MINUTES_REQUIRED');
+  }
+
+  const quote = await customerExtensionService.getExtensionQuote(
+    customerId,
+    rawBookingId,
+    additionalMinutes,
+  );
+
+  res.status(200).json({
+    success: true,
+    message: 'Extension quote calculated successfully.',
+    data: quote,
+  });
+}
+
+/**
+ * Customer booking extension initiation (Razorpay order with hold OR immediate deferred cash)
+ */
+export async function initiateCustomerExtension(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  const customerId = req.userId;
+  if (!customerId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const { bookingId } = req.params;
+  const rawBookingId = Array.isArray(bookingId) ? bookingId[0] : bookingId;
+  const { additionalMinutes, paymentMethod } = req.body;
+
+  if (!rawBookingId) {
+    throw new AppError('Booking ID is required.', 400, 'INVALID_BOOKING_ID');
+  }
+
+  if (!additionalMinutes || typeof additionalMinutes !== 'number') {
+    throw new AppError('Additional duration in minutes is required.', 400, 'MINUTES_REQUIRED');
+  }
+
+  if (!paymentMethod || !['RAZORPAY', 'CASH'].includes(paymentMethod)) {
+    throw new AppError('Valid payment method (RAZORPAY or CASH) is required.', 400, 'INVALID_PAYMENT_METHOD');
+  }
+
+  const result = await customerExtensionService.initiateExtension(customerId, rawBookingId, {
+    additionalMinutes,
+    paymentMethod,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: result.message,
+    data: result,
+  });
+}
+
+/**
+ * Customer booking online extension payment verification
+ */
+export async function verifyOnlineCustomerExtension(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  const customerId = req.userId;
+  if (!customerId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const { bookingId } = req.params;
+  const rawBookingId = Array.isArray(bookingId) ? bookingId[0] : bookingId;
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+  if (!rawBookingId) {
+    throw new AppError('Booking ID is required.', 400, 'INVALID_BOOKING_ID');
+  }
+
+  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    throw new AppError('Payment signature details are incomplete.', 400, 'INVALID_PAYMENT_PAYLOAD');
+  }
+
+  const result = await customerExtensionService.verifyOnlineExtension(customerId, rawBookingId, {
+    razorpay_order_id,
+    razorpay_payment_id,
+    razorpay_signature,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: result.message,
+    data: result,
+  });
+}
+
+/**
+ * Customer booking online extension cancellation (releases hold)
+ */
+export async function cancelOnlineCustomerExtension(
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> {
+  const customerId = req.userId;
+  if (!customerId) {
+    throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+  }
+
+  const { bookingId } = req.params;
+  const rawBookingId = Array.isArray(bookingId) ? bookingId[0] : bookingId;
+
+  if (!rawBookingId) {
+    throw new AppError('Booking ID is required.', 400, 'INVALID_BOOKING_ID');
+  }
+
+  const result = await customerExtensionService.cancelOnlineExtension(customerId, rawBookingId);
+
+  res.status(200).json({
+    success: true,
+    message: 'Pending online extension cancelled and hold released.',
+    data: result,
+  });
+}
+
+/**
+ * Submit a customer help inquiry from the helpline page
+ */
+export async function submitCustomerHelpInquiry(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const customerId = req.userId;
+    if (!customerId) {
+      throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+    }
+
+    const { parkingLotId, bookingReference, category, priority, message } = req.body as {
+      parkingLotId?: string;
+      bookingReference?: string;
+      category?: string;
+      priority?: string;
+      message?: string;
+    };
+
+    if (!parkingLotId || !message || !message.trim()) {
+      throw new AppError('Parking facility ID and message are required.', 400, 'FIELDS_REQUIRED');
+    }
+
+    let bookingId: any = null;
+    let vehicleNumber: string | undefined;
+    if (bookingReference && bookingReference.trim() !== 'N/A') {
+      const b: any = await (BookingModel as any).findOne({
+        bookingReference: bookingReference.trim(),
+      }).populate('vehicleId').lean();
+      if (b) {
+        bookingId = b._id;
+        vehicleNumber = b.vehicleId?.licensePlateNumber || b.vehiclePlateNumber;
+      }
+    }
+
+    // Map customer category to canonical incidentType
+    let incidentType = 'Other';
+    const catUpper = (category || '').toUpperCase();
+    if (catUpper.includes('BARRIER') || catUpper.includes('GATE')) {
+      incidentType = 'Security Concern';
+    } else if (catUpper.includes('OCCUPIED') || catUpper.includes('SLOT')) {
+      incidentType = 'Parking Dispute';
+    } else if (catUpper.includes('QR') || catUpper.includes('SCANNER')) {
+      incidentType = 'Invalid QR';
+    } else if (catUpper.includes('OVERSTAY') || catUpper.includes('BILLING')) {
+      incidentType = 'Overstay';
+    } else if (catUpper.includes('BREAKDOWN') || catUpper.includes('DAMAGE')) {
+      incidentType = 'Vehicle Breakdown';
+    }
+
+    const severity =
+      priority === 'CRITICAL' ? 'Critical' : priority === 'URGENT' ? 'High' : 'Medium';
+
+    const randomSuffix = Math.floor(100000 + Math.random() * 900000);
+    const incidentReference = `HLP-${randomSuffix}`;
+
+    const created = await (IncidentModel as any).create({
+      incidentReference,
+      parkingLotId,
+      bookingId,
+      customerId,
+      vehicleId: null,
+      reportedBy: customerId,
+      incidentSource: 'Customer Report',
+      incidentType,
+      severity,
+      incidentStatus: 'Open',
+      title: `[Customer Helpline] ${category || 'General Inquiry'}: ${message.trim().slice(0, 50)}`,
+      description: message.trim(),
+      location: bookingReference ? `Booking: ${bookingReference.trim()}` : null,
+      vehicleNumber: vehicleNumber || null,
+    });
+
+    const populated = await (IncidentModel as any).findById(created._id)
+      .populate('parkingLotId', 'parkingName address city contactNumber supportEmail')
+      .populate('customerId', 'fullName email phoneNumber')
+      .lean();
+
+    res.status(201).json({
+      success: true,
+      message: 'Support inquiry submitted successfully.',
+      data: populated,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Get all customer help inquiries submitted by the current authenticated customer
+ */
+export async function getCustomerHelpInquiries(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const customerId = req.userId;
+    if (!customerId) {
+      throw new AppError('Authentication required.', 401, 'UNAUTHORIZED');
+    }
+
+    const inquiries = await (IncidentModel as any).find({
+      customerId,
+      incidentSource: 'Customer Report',
+    })
+      .populate('parkingLotId', 'parkingName address city contactNumber supportEmail')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.status(200).json({
+      success: true,
+      data: inquiries,
+    });
+  } catch (err) {
+    next(err);
+  }
 }
 

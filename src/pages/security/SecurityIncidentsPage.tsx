@@ -22,6 +22,9 @@ import {
   ChevronRight,
   ShieldCheck,
   Check,
+  Send,
+  MessageSquare,
+  LifeBuoy,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -45,6 +48,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
+import { cn } from '@/lib/utils';
 import {
   securityApi,
   type SecurityAssignedFacility,
@@ -52,6 +56,7 @@ import {
   type SecurityIncidentListResult,
 } from '@/api/security.api';
 import { getSocket } from '@/lib/socket';
+import { useLiveSync } from '@/hooks/useLiveSync';
 
 const LOCAL_STORAGE_KEY = 'parkease_security_active_lot_id';
 
@@ -88,6 +93,7 @@ export const SecurityIncidentsPage: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
   const [selectedPriority, setSelectedPriority] = useState<string>('ALL');
   const [selectedType, setSelectedType] = useState<string>('ALL');
+  const [sourceFilter, setSourceFilter] = useState<'ALL' | 'CUSTOMER_INQUIRIES'>('ALL');
 
   // Create Incident Modal State
   const [isCreateOpen, setIsCreateOpen] = useState<boolean>(false);
@@ -105,6 +111,8 @@ export const SecurityIncidentsPage: React.FC = () => {
   // View / Detail Dialog State
   const [viewedIncident, setViewedIncident] = useState<SecurityIncident | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState<boolean>(false);
+  const [securityReplyText, setSecurityReplyText] = useState<string>('');
+  const [isSubmittingReply, setIsSubmittingReply] = useState<boolean>(false);
 
   // Resolve Modal State
   const [resolveIncidentId, setResolveIncidentId] = useState<string | null>(null);
@@ -160,10 +168,10 @@ export const SecurityIncidentsPage: React.FC = () => {
   }, []);
 
   // 2. Fetch Incidents
-  const fetchIncidents = useCallback(async () => {
+  const fetchIncidents = useCallback(async (isSilent = false) => {
     if (!selectedLotId) return;
     try {
-      setIsLoadingIncidents(true);
+      if (!isSilent) setIsLoadingIncidents(true);
       const data = await securityApi.getIncidents({
         parkingLotId: selectedLotId,
         status: selectedStatus,
@@ -177,15 +185,20 @@ export const SecurityIncidentsPage: React.FC = () => {
     } catch (err: unknown) {
       console.warn('Failed to load incidents:', err);
     } finally {
-      setIsLoadingIncidents(false);
+      if (!isSilent) setIsLoadingIncidents(false);
     }
   }, [selectedLotId, selectedStatus, selectedPriority, selectedType, debouncedSearch, page, limit]);
 
   useEffect(() => {
     if (selectedLotId && !isLoadingFacilities) {
-      fetchIncidents();
+      void fetchIncidents();
     }
   }, [selectedLotId, isLoadingFacilities, fetchIncidents]);
+
+  // Live dynamic background sync without ghost reload
+  useLiveSync(() => {
+    if (selectedLotId) void fetchIncidents(true);
+  }, { enabled: Boolean(selectedLotId) });
 
   // 3. Socket.IO Real-time Synchronization
   useEffect(() => {
@@ -306,18 +319,18 @@ export const SecurityIncidentsPage: React.FC = () => {
   // Status Update Handler
   const handleStatusChange = async (
     incidentId: string,
-    newStatus: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed',
+    newStatus: 'Open' | 'Under Investigation' | 'Resolved' | 'Closed' | 'Pending' | 'Resolving' | string,
     notes?: string,
   ) => {
     if (!selectedLotId) return;
     try {
       setIsResolving(true);
       const updated = await securityApi.updateIncidentStatus(incidentId, selectedLotId, {
-        status: newStatus,
+        status: newStatus as any,
         resolutionNotes: notes,
       });
 
-      toast.success(`Incident ${updated.incidentReference} marked as ${newStatus}.`);
+      toast.success(`Incident ${updated.incidentReference} status updated.`);
 
       if (viewedIncident && viewedIncident._id === incidentId) {
         setViewedIncident(updated);
@@ -331,6 +344,104 @@ export const SecurityIncidentsPage: React.FC = () => {
       toast.error(msg);
     } finally {
       setIsResolving(false);
+    }
+  };
+
+  // One-tap multi-state transition: Pending -> Resolving -> Resolved
+  const handleTransitionInquiryStatus = async (
+    incidentId: string,
+    currentStatus: string,
+    e?: React.MouseEvent,
+  ) => {
+    if (e) e.stopPropagation();
+    const s = (currentStatus || 'Pending').toLowerCase();
+    let nextStatus = 'Under Investigation';
+    let defaultNotes: string | undefined = undefined;
+
+    if (s === 'open' || s === 'pending') {
+      nextStatus = 'Under Investigation'; // Resolving
+    } else if (s === 'under investigation' || s === 'resolving') {
+      nextStatus = 'Resolved'; // Resolved
+      defaultNotes = 'Resolved by on-site security staff.';
+    } else if (s === 'resolved' || s === 'closed') {
+      nextStatus = 'Open'; // Cycle back to Pending / Re-open if tapped
+    }
+
+    await handleStatusChange(incidentId, nextStatus, defaultNotes);
+  };
+
+  // Render Transition Button: Pending -> Resolving -> Resolved
+  const renderTransitionButton = (inc: SecurityIncident) => {
+    const s = (inc.incidentStatus || 'Pending').toLowerCase();
+    const isPending = s === 'open' || s === 'pending';
+    const isResolvingCurrent = s === 'under investigation' || s === 'resolving';
+
+    if (isPending) {
+      return (
+        <Button
+          size="sm"
+          disabled={isResolving}
+          onClick={(e) => handleTransitionInquiryStatus(inc._id, inc.incidentStatus, e)}
+          className="h-8 text-xs font-bold gap-1.5 bg-amber-500 hover:bg-amber-600 text-black border border-amber-600/30 cursor-pointer shadow-xs transition-all animate-pulse"
+          title="Tap to advance status: Pending ➔ Resolving"
+        >
+          <Clock className="w-3.5 h-3.5" />
+          <span>Pending ➔ Tap to Resolve</span>
+        </Button>
+      );
+    }
+
+    if (isResolvingCurrent) {
+      return (
+        <Button
+          size="sm"
+          disabled={isResolving}
+          onClick={(e) => handleTransitionInquiryStatus(inc._id, inc.incidentStatus, e)}
+          className="h-8 text-xs font-bold gap-1.5 bg-blue-600 hover:bg-blue-700 text-white border border-blue-700/30 cursor-pointer shadow-xs transition-all"
+          title="Tap to advance status: Resolving ➔ Resolved"
+        >
+          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+          <span>Resolving ➔ Mark Resolved</span>
+        </Button>
+      );
+    }
+
+    return (
+      <Button
+        size="sm"
+        disabled={isResolving}
+        onClick={(e) => handleTransitionInquiryStatus(inc._id, inc.incidentStatus, e)}
+        variant="outline"
+        className="h-8 text-xs font-semibold gap-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 border-emerald-500/40 cursor-pointer"
+        title="Status is Resolved. Tap to cycle back to Pending if required."
+      >
+        <Check className="w-3.5 h-3.5" />
+        <span>Resolved ✓</span>
+      </Button>
+    );
+  };
+
+  // Submit Reply to Owner / Staff
+  const handleSecuritySubmitReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!viewedIncident || !selectedLotId || !securityReplyText.trim()) return;
+
+    try {
+      setIsSubmittingReply(true);
+      const updated = await securityApi.addIncidentResponse(
+        viewedIncident._id,
+        selectedLotId,
+        { message: securityReplyText.trim() },
+      );
+      toast.success('Reply dispatched to facility owner.');
+      setViewedIncident(updated);
+      setSecurityReplyText('');
+      fetchIncidents();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to send reply';
+      toast.error(msg);
+    } finally {
+      setIsSubmittingReply(false);
     }
   };
 
@@ -351,18 +462,38 @@ export const SecurityIncidentsPage: React.FC = () => {
 
   // Status color styling
   const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'Open':
-        return <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400">Open</Badge>;
-      case 'Under Investigation':
-        return <Badge variant="outline" className="border-indigo-500/30 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">Under Investigation</Badge>;
-      case 'Resolved':
-        return <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Resolved</Badge>;
-      case 'Closed':
-      default:
-        return <Badge variant="outline" className="border-slate-500/30 bg-slate-500/10 text-slate-500">Closed</Badge>;
+    const s = (status || '').toLowerCase();
+    if (s === 'open' || s === 'pending') {
+      return (
+        <Badge variant="outline" className="border-amber-500/40 bg-amber-500/15 text-amber-600 dark:text-amber-400 font-bold">
+          Pending
+        </Badge>
+      );
     }
+    if (s === 'under investigation' || s === 'resolving') {
+      return (
+        <Badge variant="outline" className="border-blue-500/40 bg-blue-500/15 text-blue-600 dark:text-blue-400 font-bold animate-pulse">
+          Resolving
+        </Badge>
+      );
+    }
+    if (s === 'resolved') {
+      return (
+        <Badge variant="outline" className="border-emerald-500/40 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-bold">
+          Resolved ✓
+        </Badge>
+      );
+    }
+    return <Badge variant="outline" className="border-slate-500/30 bg-slate-500/10 text-slate-500">Closed</Badge>;
   };
+
+  const displayedIncidents = React.useMemo(() => {
+    if (!incidentsData?.incidents) return [];
+    if (sourceFilter === 'CUSTOMER_INQUIRIES') {
+      return incidentsData.incidents.filter((i) => i.incidentSource === 'Customer Report');
+    }
+    return incidentsData.incidents;
+  }, [incidentsData, sourceFilter]);
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8 space-y-6">
@@ -481,6 +612,33 @@ export const SecurityIncidentsPage: React.FC = () => {
         </Card>
       </div>
 
+      {/* 2.5 Inquiries vs All Tab Toggle */}
+      <div className="flex items-center gap-2 border-b border-border/60 pb-1">
+        <Button
+          size="sm"
+          variant={sourceFilter === 'ALL' ? 'default' : 'ghost'}
+          onClick={() => setSourceFilter('ALL')}
+          className="text-xs h-8 gap-1.5 font-semibold cursor-pointer"
+        >
+          <span>All Incidents &amp; Reports</span>
+          <Badge variant={sourceFilter === 'ALL' ? 'secondary' : 'outline'} className="text-[10px] ml-1">
+            {incidentsData?.pagination.totalCount ?? 0}
+          </Badge>
+        </Button>
+        <Button
+          size="sm"
+          variant={sourceFilter === 'CUSTOMER_INQUIRIES' ? 'default' : 'ghost'}
+          onClick={() => setSourceFilter('CUSTOMER_INQUIRIES')}
+          className="text-xs h-8 gap-1.5 font-semibold cursor-pointer"
+        >
+          <LifeBuoy className="w-3.5 h-3.5 text-primary" />
+          <span>Customer Submitted Inquiries</span>
+          <Badge variant={sourceFilter === 'CUSTOMER_INQUIRIES' ? 'secondary' : 'outline'} className="text-[10px] ml-1 bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+            {incidentsData?.incidents.filter((i) => i.incidentSource === 'Customer Report').length ?? 0}
+          </Badge>
+        </Button>
+      </div>
+
       {/* 3. Search & Filter Bar */}
       <Card className="border-border/80 shadow-xs">
         <CardContent className="p-4 space-y-3">
@@ -551,17 +709,6 @@ export const SecurityIncidentsPage: React.FC = () => {
                   </SelectContent>
                 </Select>
               </div>
-
-              {/* Refresh Button */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={fetchIncidents}
-                disabled={isLoadingIncidents}
-                className="h-9 px-3 text-xs"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingIncidents ? 'animate-spin' : ''}`} />
-              </Button>
             </div>
           </div>
         </CardContent>
@@ -587,23 +734,27 @@ export const SecurityIncidentsPage: React.FC = () => {
                 <Skeleton key={n} className="h-16 w-full rounded-xl" />
               ))}
             </div>
-          ) : !incidentsData || incidentsData.incidents.length === 0 ? (
+          ) : !incidentsData || displayedIncidents.length === 0 ? (
             <div className="p-12 text-center space-y-3">
               <div className="w-12 h-12 rounded-full bg-muted/30 text-muted-foreground flex items-center justify-center mx-auto">
                 <CheckCircle2 className="w-6 h-6 text-emerald-500" />
               </div>
               <div className="space-y-1">
-                <h4 className="text-sm font-bold text-foreground">No Incidents Reported</h4>
+                <h4 className="text-sm font-bold text-foreground">
+                  {sourceFilter === 'CUSTOMER_INQUIRIES' ? 'No Customer Inquiries Found' : 'No Incidents Reported'}
+                </h4>
                 <p className="text-xs text-muted-foreground max-w-sm mx-auto">
                   {debouncedSearch || selectedStatus !== 'ALL' || selectedPriority !== 'ALL' || selectedType !== 'ALL'
-                    ? 'No incidents match your current filter settings. Try adjusting your search query.'
+                    ? 'No records match your current filter settings. Try adjusting your search query.'
+                    : sourceFilter === 'CUSTOMER_INQUIRIES'
+                    ? 'There are currently no customer inquiries submitted for this parking facility.'
                     : 'The selected facility currently has no recorded gate infractions or security incidents.'}
                 </p>
               </div>
             </div>
           ) : (
             <div className="divide-y divide-border/60">
-              {incidentsData.incidents.map((inc) => (
+              {displayedIncidents.map((inc) => (
                 <div
                   key={inc._id}
                   className="p-4.5 hover:bg-muted/15 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4"
@@ -619,6 +770,11 @@ export const SecurityIncidentsPage: React.FC = () => {
                       <Badge variant="secondary" className="text-[10px] font-medium">
                         {inc.incidentType}
                       </Badge>
+                      {inc.incidentSource === 'Customer Report' && (
+                        <Badge className="bg-purple-500/15 text-purple-600 dark:text-purple-400 border border-purple-500/30 text-[10px] font-bold">
+                          Customer Inquiry
+                        </Badge>
+                      )}
                       {inc.attachments.length > 0 && (
                         <Badge variant="outline" className="text-[10px] gap-1 text-muted-foreground">
                           <Camera className="w-2.5 h-2.5" />
@@ -653,7 +809,7 @@ export const SecurityIncidentsPage: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Right Column: Quick Action Buttons */}
+                  {/* Right Column: Quick Action Buttons & Multi-State Transition Button */}
                   <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
                     <Button
                       variant="outline"
@@ -662,25 +818,14 @@ export const SecurityIncidentsPage: React.FC = () => {
                         setViewedIncident(inc);
                         setIsDetailOpen(true);
                       }}
-                      className="gap-1.5 text-xs h-8 px-3"
+                      className="gap-1.5 text-xs h-8 px-3 cursor-pointer"
                     >
                       <Eye className="w-3.5 h-3.5" />
                       <span>Details</span>
                     </Button>
 
-                    {inc.incidentStatus !== 'Resolved' && inc.incidentStatus !== 'Closed' && (
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          setResolveIncidentId(inc._id);
-                          setResolutionNotes('');
-                        }}
-                        className="gap-1.5 text-xs h-8 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-medium"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Resolve</span>
-                      </Button>
-                    )}
+                    {/* Transition Button: Pending -> Resolving -> Resolved */}
+                    {renderTransitionButton(inc)}
                   </div>
                 </div>
               ))}
@@ -1020,6 +1165,86 @@ export const SecurityIncidentsPage: React.FC = () => {
                 </div>
               )}
 
+              {/* Chronological Communication & Owner Collaboration */}
+              <div className="space-y-3 pt-3 border-t border-border/80">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-bold flex items-center gap-1.5 text-foreground">
+                    <MessageSquare className="w-3.5 h-3.5 text-primary" />
+                    <span>Incident Communication & Owner Responses ({viewedIncident.responses?.length || 0})</span>
+                  </Label>
+                </div>
+
+                {(!viewedIncident.responses || viewedIncident.responses.length === 0) ? (
+                  <div className="p-4 rounded-xl bg-muted/20 border border-border/60 text-xs text-muted-foreground text-center">
+                    No operational replies recorded yet. Once the facility owner responds, their messages will appear here.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
+                    {viewedIncident.responses.map((resp) => {
+                      const isOwner = resp.authorRole === 'PARKING_OWNER' || resp.authorRole === 'OWNER';
+                      return (
+                        <div
+                          key={resp.responseId}
+                          className={cn(
+                            'p-3 rounded-xl border text-xs space-y-1',
+                            isOwner
+                              ? 'bg-primary/5 border-primary/20 ml-4 sm:ml-8'
+                              : 'bg-muted/40 border-border/80 mr-4 sm:mr-8',
+                          )}
+                        >
+                          <div className="flex items-center justify-between text-[11px]">
+                            <div className="flex items-center gap-2">
+                              <span className="font-extrabold text-foreground">{resp.authorName}</span>
+                              <Badge
+                                variant={isOwner ? 'default' : 'secondary'}
+                                className="text-[10px] px-1.5 py-0 h-4 font-semibold"
+                              >
+                                {isOwner ? 'Facility Owner' : 'Security Officer'}
+                              </Badge>
+                            </div>
+                            <span className="text-[10px] text-muted-foreground">
+                              {new Date(resp.createdAt).toLocaleString('en-IN', {
+                                dateStyle: 'short',
+                                timeStyle: 'short',
+                              })}
+                            </span>
+                          </div>
+                          <p className="text-foreground whitespace-pre-wrap leading-relaxed">{resp.message}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Reply Composer for Security Staff */}
+                {viewedIncident.incidentStatus !== 'Closed' ? (
+                  <form onSubmit={handleSecuritySubmitReply} className="pt-2 space-y-2">
+                    <Textarea
+                      placeholder="Reply to the owner or post an on-site operational update..."
+                      value={securityReplyText}
+                      onChange={(e) => setSecurityReplyText(e.target.value)}
+                      rows={2}
+                      className="text-xs resize-none"
+                    />
+                    <div className="flex justify-end">
+                      <Button
+                        type="submit"
+                        size="sm"
+                        disabled={isSubmittingReply || !securityReplyText.trim()}
+                        className="gap-1.5 text-xs h-8 cursor-pointer"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        <span>{isSubmittingReply ? 'Sending...' : 'Reply to Owner'}</span>
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <p className="text-center text-[11px] text-muted-foreground py-1">
+                    This incident is closed. History is preserved and read-only.
+                  </p>
+                )}
+              </div>
+
               {/* Action Buttons in Drawer */}
               <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-border/80">
                 <Button variant="outline" size="sm" onClick={() => setIsDetailOpen(false)}>
@@ -1027,31 +1252,8 @@ export const SecurityIncidentsPage: React.FC = () => {
                 </Button>
 
                 <div className="flex items-center gap-2">
-                  {viewedIncident.incidentStatus === 'Open' && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleStatusChange(viewedIncident._id, 'Under Investigation')}
-                      disabled={isResolving}
-                      className="text-xs"
-                    >
-                      Start Investigation
-                    </Button>
-                  )}
-
-                  {viewedIncident.incidentStatus !== 'Resolved' && viewedIncident.incidentStatus !== 'Closed' && (
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        setResolveIncidentId(viewedIncident._id);
-                        setResolutionNotes('');
-                      }}
-                      className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
-                    >
-                      <Check className="w-3.5 h-3.5 mr-1" />
-                      Resolve Incident
-                    </Button>
-                  )}
+                  {/* Multi-State Transition Button right in the modal */}
+                  {renderTransitionButton(viewedIncident)}
 
                   {viewedIncident.incidentStatus === 'Resolved' && (
                     <Button
@@ -1065,16 +1267,10 @@ export const SecurityIncidentsPage: React.FC = () => {
                     </Button>
                   )}
 
-                  {(viewedIncident.incidentStatus === 'Resolved' || viewedIncident.incidentStatus === 'Closed') && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleStatusChange(viewedIncident._id, 'Open')}
-                      disabled={isResolving}
-                      className="text-xs text-muted-foreground hover:text-foreground"
-                    >
-                      Reopen Incident
-                    </Button>
+                  {viewedIncident.incidentStatus === 'Closed' && (
+                    <Badge variant="outline" className="text-xs text-muted-foreground border-border">
+                      Historically Finalized
+                    </Badge>
                   )}
                 </div>
               </div>

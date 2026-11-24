@@ -228,3 +228,47 @@
   animation: bell-ring 1.1s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
   transform-origin: top center;
 }
+
+/* Square QR Reader Frame Styles & Animations */
+@keyframes qr-laser-sweep {
+  0% {
+    top: 6%;
+    opacity: 0.85;
+  }
+  50% {
+    top: 92%;
+    opacity: 1;
+  }
+  100% {
+    top: 6%;
+    opacity: 0.85;
+  }
+}
+
+.animate-qr-laser {
+  animation: qr-laser-sweep 2.4s ease-in-out infinite;
+}
+
+#sim-camera-viewport,
+#qr-camera-viewport {
+  width: 100% !important;
+  height: 100% !important;
+  border: none !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background-color: #020617 !important;
+}
+
+#sim-camera-viewport video,
+#qr-camera-viewport video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  border-radius: 0.875rem !important;
+}
+
+#sim-camera-viewport #qr-shaded-region,
+#qr-camera-viewport #qr-shaded-region {
+  border-color: rgba(16, 185, 129, 0.5) !important;
+}

@@ -12,6 +12,7 @@ import { SessionModel, type Session } from '../models/Session.js';
 import { NotificationModel } from '../models/Notification.js';
 import { ParkingLotModel, type ParkingLot } from '../models/ParkingLot.js';
 import { ParkingFloorModel, type ParkingFloor } from '../models/ParkingFloor.js';
+import { ParkingLayoutModel, type ParkingLayout } from '../models/ParkingLayout.js';
 import { ParkingZoneModel, type ParkingZone } from '../models/ParkingZone.js';
 import { ParkingSlotModel, type ParkingSlot } from '../models/ParkingSlot.js';
 import { BookingModel, type Booking } from '../models/Booking.js';
@@ -1539,8 +1540,9 @@ class OwnerService {
     ownerId: string,
     slotId: string,
     payload: {
-      slotStatus: string;
+      slotStatus?: string;
       remarks?: string | null | undefined;
+      isOverflow?: boolean;
     },
     context?: {
       ipAddress?: string | undefined;
@@ -1552,6 +1554,10 @@ class OwnerService {
     }
     if (!mongoose.Types.ObjectId.isValid(slotId)) {
       throw new AppError('Invalid parking slot ID format.', 400, 'INVALID_SLOT_ID');
+    }
+
+    if (payload.slotStatus === undefined && payload.isOverflow === undefined) {
+      throw new AppError('Either slotStatus or isOverflow must be specified for update.', 400, 'MISSING_UPDATE_PAYLOAD');
     }
 
     const slot = await (ParkingSlotModel as mongoose.Model<ParkingSlot>).findById(slotId);
@@ -1569,63 +1575,120 @@ class OwnerService {
       throw new AppError('Access denied: You do not own this parking facility.', 403, 'FORBIDDEN');
     }
 
-    const rawStatus = (payload.slotStatus || '').trim();
-    let targetStatus: 'Available' | 'Under Maintenance';
-    if (rawStatus === 'Available') {
-      targetStatus = 'Available';
-    } else if (rawStatus === 'Under Maintenance' || rawStatus === 'Maintenance' || rawStatus === 'Blocked') {
-      targetStatus = 'Under Maintenance';
-    } else {
-      throw new AppError(
-        'Invalid operational status change. Supported operational states are "Available" and "Under Maintenance" (Blocked).',
-        400,
-        'INVALID_STATUS_TRANSITION',
-      );
-    }
+    const oldStatus = slot.slotStatus;
+    const oldIsOverflow = Boolean(slot.isOverflow);
+    let targetStatus: 'Available' | 'Under Maintenance' | undefined;
 
-    // 1. Current physical occupancy / reservation checks
-    if (slot.slotStatus === 'Occupied') {
-      throw new AppError(
-        `Cannot change status: Slot ${slot.slotNumber} is currently occupied by a parked vehicle.`,
-        409,
-        'SLOT_OCCUPIED_CONFLICT',
-      );
-    }
-
-    if (slot.slotStatus === 'Reserved') {
-      throw new AppError(
-        `Cannot change status: Slot ${slot.slotNumber} is currently reserved for an incoming customer booking.`,
-        409,
-        'SLOT_RESERVED_CONFLICT',
-      );
-    }
-
-    // 2. Booking conflict check for Under Maintenance transition
-    if (targetStatus === 'Under Maintenance') {
-      const conflictingBooking = await (BookingModel as mongoose.Model<Booking>)
-        .findOne({
+    // Handle isOverflow Toggle
+    if (payload.isOverflow !== undefined) {
+      const targetIsOverflow = Boolean(payload.isOverflow);
+      if (!targetIsOverflow && slot.isOverflow) {
+        // Safety check: Cannot remove overflow designation if slot has active or confirmed bookings
+        const activeBooking = await (BookingModel as mongoose.Model<Booking>).findOne({
           currentSlotId: slot._id,
           bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
-        })
-        .select('bookingReference bookingStatus scheduledEntryTime')
-        .lean();
-
-      if (conflictingBooking) {
-        throw new AppError(
-          `Cannot place slot under maintenance: Active or confirmed booking (${conflictingBooking.bookingReference}) is assigned to this slot.`,
-          409,
-          'ACTIVE_BOOKING_CONFLICT',
-        );
+        });
+        if (activeBooking) {
+          throw new AppError(
+            `Cannot remove overflow designation: Slot ${slot.slotNumber} currently has an active booking (${activeBooking.bookingReference}).`,
+            409,
+            'ACTIVE_BOOKING_CONFLICT',
+          );
+        }
       }
+
+      slot.isOverflow = targetIsOverflow;
+
+      // Sync 2D layout element in ParkingLayoutModel
+      try {
+        const layout = await (ParkingLayoutModel as mongoose.Model<ParkingLayout>).findOne({
+          parkingLotId: slot.parkingLotId,
+          floorId: slot.floorId,
+        });
+        if (layout && layout.elements) {
+          let layoutModified = false;
+          for (const el of layout.elements as any[]) {
+            if (el.slotId?.toString() === slot._id.toString() || el.slotNumber === slot.slotNumber) {
+              el.isOverflow = targetIsOverflow;
+              layoutModified = true;
+              break;
+            }
+          }
+          if (layoutModified) {
+            await layout.save();
+          }
+        }
+      } catch (layoutSyncErr) {
+        console.warn('Failed to sync layout element isOverflow:', layoutSyncErr);
+      }
+
+      // Re-count facility overflow slots
+      const overflowCount = await (ParkingSlotModel as mongoose.Model<ParkingSlot>).countDocuments({
+        parkingLotId: lot._id,
+        isOverflow: true,
+      });
+      lot.overflowSlotCount = overflowCount;
+      await lot.save();
     }
 
-    const oldStatus = slot.slotStatus;
-    slot.slotStatus = targetStatus;
+    // Handle slotStatus Transition
+    if (payload.slotStatus !== undefined) {
+      const rawStatus = (payload.slotStatus || '').trim();
+      if (rawStatus === 'Available') {
+        targetStatus = 'Available';
+      } else if (rawStatus === 'Under Maintenance' || rawStatus === 'Maintenance' || rawStatus === 'Blocked') {
+        targetStatus = 'Under Maintenance';
+      } else {
+        throw new AppError(
+          'Invalid operational status change. Supported operational states are "Available" and "Under Maintenance" (Blocked).',
+          400,
+          'INVALID_STATUS_TRANSITION',
+        );
+      }
 
-    if (payload.remarks !== undefined) {
-      slot.remarks = payload.remarks && payload.remarks.trim().length > 0 ? payload.remarks.trim().slice(0, 250) : null;
-    } else if (targetStatus === 'Available') {
-      slot.remarks = null;
+      // 1. Current physical occupancy / reservation checks
+      if (slot.slotStatus === 'Occupied') {
+        throw new AppError(
+          `Cannot change status: Slot ${slot.slotNumber} is currently occupied by a parked vehicle.`,
+          409,
+          'SLOT_OCCUPIED_CONFLICT',
+        );
+      }
+
+      if (slot.slotStatus === 'Reserved') {
+        throw new AppError(
+          `Cannot change status: Slot ${slot.slotNumber} is currently reserved for an incoming customer booking.`,
+          409,
+          'SLOT_RESERVED_CONFLICT',
+        );
+      }
+
+      // 2. Booking conflict check for Under Maintenance transition
+      if (targetStatus === 'Under Maintenance') {
+        const conflictingBooking = await (BookingModel as mongoose.Model<Booking>)
+          .findOne({
+            currentSlotId: slot._id,
+            bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+          })
+          .select('bookingReference bookingStatus scheduledEntryTime')
+          .lean();
+
+        if (conflictingBooking) {
+          throw new AppError(
+            `Cannot place slot under maintenance: Active or confirmed booking (${conflictingBooking.bookingReference}) is assigned to this slot.`,
+            409,
+            'ACTIVE_BOOKING_CONFLICT',
+          );
+        }
+      }
+
+      slot.slotStatus = targetStatus;
+
+      if (payload.remarks !== undefined) {
+        slot.remarks = payload.remarks && payload.remarks.trim().length > 0 ? payload.remarks.trim().slice(0, 250) : null;
+      } else if (targetStatus === 'Available') {
+        slot.remarks = null;
+      }
     }
 
     await slot.save();
@@ -1644,13 +1707,17 @@ class OwnerService {
     // 4. Record Immutable Audit Log
     try {
       const ownerUser = await (UserModel as mongoose.Model<User>).findById(ownerId).select('roleId');
+      const actionDetails = [];
+      if (targetStatus) actionDetails.push(`Status: ${oldStatus} -> ${targetStatus}`);
+      if (payload.isOverflow !== undefined) actionDetails.push(`Overflow: ${oldIsOverflow} -> ${slot.isOverflow}`);
+
       await (AuditLogModel as mongoose.Model<any>).create({
         userId: new mongoose.Types.ObjectId(ownerId),
         roleId: ownerUser?.roleId ?? null,
         actionCode: 'SLOT_STATUS_UPDATED',
         module: 'Parking Management',
-        actionTitle: 'Operational Slot Status Changed',
-        description: `Slot "${slot.slotNumber}" operational status changed from "${oldStatus}" to "${targetStatus}" by Parking Owner.${slot.remarks ? ` Remarks: ${slot.remarks}` : ''}`,
+        actionTitle: 'Operational Slot Status / Overflow Changed',
+        description: `Slot "${slot.slotNumber}" updated by Parking Owner. ${actionDetails.join(', ')}.${slot.remarks ? ` Remarks: ${slot.remarks}` : ''}`,
         targetDocumentId: slot._id,
         targetCollection: 'parkingSlots',
         ipAddress: context?.ipAddress,
@@ -1661,7 +1728,8 @@ class OwnerService {
           floorId: slot.floorId,
           zoneId: slot.zoneId,
           oldStatus,
-          newStatus: targetStatus,
+          newStatus: slot.slotStatus,
+          isOverflow: slot.isOverflow,
           remarks: slot.remarks,
         },
       });
@@ -1678,6 +1746,7 @@ class OwnerService {
         slotId: slot._id.toString(),
         slotNumber: slot.slotNumber,
         slotStatus: slot.slotStatus,
+        isOverflow: slot.isOverflow,
         remarks: slot.remarks,
         timestamp: new Date().toISOString(),
       });
@@ -1945,11 +2014,27 @@ class OwnerService {
       const pLot = b.parkingLotId;
       const parkingName = pLot?.parkingName || pLot?.name || 'Parking Facility';
 
+      const isLiveOverstay =
+        (b.bookingStatus === 'Active' || b.bookingStatus === 'Overstay') &&
+        !b.actualExitTime &&
+        Date.now() > new Date(b.scheduledExitTime).getTime();
+      const liveOverstayMins = isLiveOverstay
+        ? Math.max(
+            b.overstayDurationMinutes || 1,
+            Math.ceil((Date.now() - new Date(b.scheduledExitTime).getTime()) / (60 * 1000)),
+          )
+        : b.overstayDurationMinutes || 0;
+      const liveOverstayHours = isLiveOverstay ? Math.max(1, Math.ceil(liveOverstayMins / 60)) : 0;
+      const liveOverstayRate = b.overstayRateAtBooking || b.parkingRateAtBooking || 0;
+      const liveOverstayCharge = isLiveOverstay
+        ? Math.max(b.overstayCharge || 0, Math.round(liveOverstayHours * liveOverstayRate))
+        : b.overstayCharge || 0;
+
       return {
         _id: b._id.toString(),
         bookingReference: b.bookingReference,
         bookingType: b.bookingType,
-        bookingStatus: b.bookingStatus,
+        bookingStatus: isLiveOverstay ? 'Overstay' : b.bookingStatus,
         createdBy: b.bookingType === 'WALK_IN' ? 'Security Staff' : 'Customer',
         scheduledEntryTime: b.scheduledEntryTime,
         scheduledExitTime: b.scheduledExitTime,
@@ -1958,13 +2043,13 @@ class OwnerService {
         bookingDurationMinutes: b.bookingDurationMinutes || 0,
         parkingRateAtBooking: b.parkingRateAtBooking || 0,
         baseAmount: b.baseAmount || 0,
-        additionalCharges: b.additionalCharges || 0,
-        totalAmount: b.totalAmount || 0,
+        additionalCharges: Math.max(b.additionalCharges || 0, liveOverstayCharge),
+        totalAmount: Math.max(b.totalAmount || 0, (b.baseAmount || 0) + (b.platformBookingFee || 0) + liveOverstayCharge),
         refundAmount: b.refundAmount || 0,
         noShowDetected: Boolean(b.noShowDetected),
-        overstayDetected: Boolean(b.overstayDetected),
-        overstayDurationMinutes: b.overstayDurationMinutes || 0,
-        overstayCharge: b.overstayCharge || 0,
+        overstayDetected: Boolean(b.overstayDetected || isLiveOverstay),
+        overstayDurationMinutes: liveOverstayMins,
+        overstayCharge: liveOverstayCharge,
         qrCode: b.qrCode,
         cancellationReason: b.cancellationReason || null,
         cancellationBy: b.cancellationBy || null,
@@ -2131,11 +2216,27 @@ class OwnerService {
       rawBooking.bookingStatus === 'Active' ||
       rawBooking.bookingStatus === 'Confirmed';
 
+    const isLiveDetailOverstay =
+      (rawBooking.bookingStatus === 'Active' || rawBooking.bookingStatus === 'Overstay') &&
+      !rawBooking.actualExitTime &&
+      Date.now() > new Date(rawBooking.scheduledExitTime).getTime();
+    const detailOverstayMins = isLiveDetailOverstay
+      ? Math.max(
+          rawBooking.overstayDurationMinutes || 1,
+          Math.ceil((Date.now() - new Date(rawBooking.scheduledExitTime).getTime()) / (60 * 1000)),
+        )
+      : rawBooking.overstayDurationMinutes || 0;
+    const detailOverstayHours = isLiveDetailOverstay ? Math.max(1, Math.ceil(detailOverstayMins / 60)) : 0;
+    const detailOverstayRate = rawBooking.overstayRateAtBooking || rawBooking.parkingRateAtBooking || 0;
+    const detailOverstayCharge = isLiveDetailOverstay
+      ? Math.max(rawBooking.overstayCharge || 0, Math.round(detailOverstayHours * detailOverstayRate))
+      : rawBooking.overstayCharge || 0;
+
     return {
       _id: rawBooking._id.toString(),
       bookingReference: rawBooking.bookingReference,
       bookingType: rawBooking.bookingType,
-      bookingStatus: rawBooking.bookingStatus,
+      bookingStatus: isLiveDetailOverstay ? 'Overstay' : rawBooking.bookingStatus,
       createdBy: rawBooking.bookingType === 'WALK_IN' ? 'Security Staff' : 'Customer',
       scheduledEntryTime: rawBooking.scheduledEntryTime,
       scheduledExitTime: rawBooking.scheduledExitTime,
@@ -2144,13 +2245,16 @@ class OwnerService {
       bookingDurationMinutes: rawBooking.bookingDurationMinutes || 0,
       parkingRateAtBooking: rawBooking.parkingRateAtBooking || 0,
       baseAmount: rawBooking.baseAmount || 0,
-      additionalCharges: rawBooking.additionalCharges || 0,
-      totalAmount: rawBooking.totalAmount || 0,
+      additionalCharges: Math.max(rawBooking.additionalCharges || 0, detailOverstayCharge),
+      totalAmount: Math.max(
+        rawBooking.totalAmount || 0,
+        (rawBooking.baseAmount || 0) + (rawBooking.platformBookingFee || 0) + detailOverstayCharge,
+      ),
       refundAmount: rawBooking.refundAmount || 0,
       noShowDetected: Boolean(rawBooking.noShowDetected),
-      overstayDetected: Boolean(rawBooking.overstayDetected),
-      overstayDurationMinutes: rawBooking.overstayDurationMinutes || 0,
-      overstayCharge: rawBooking.overstayCharge || 0,
+      overstayDetected: Boolean(rawBooking.overstayDetected || isLiveDetailOverstay),
+      overstayDurationMinutes: detailOverstayMins,
+      overstayCharge: detailOverstayCharge,
       qrCode: rawBooking.qrCode,
       cancellationReason: rawBooking.cancellationReason || null,
       cancellationBy: rawBooking.cancellationBy || null,

@@ -156,11 +156,78 @@ const parkingLotSchema = new mongoose.Schema(
       min: 0,
     },
 
+    exitGracePeriodMinutes: {
+      type: Number,
+      required: true,
+      default: 15,
+      min: 0,
+    },
+
+    maxBookingDurationHours: {
+      type: Number,
+      required: true,
+      default: 24,
+      min: 1,
+    },
+
+    allowOnlineBookings: {
+      type: Boolean,
+      required: true,
+      default: true,
+    },
+
+    allowWalkInBookings: {
+      type: Boolean,
+      required: true,
+      default: true,
+    },
+
+    overstayGracePeriodMinutes: {
+      type: Number,
+      required: true,
+      default: 15,
+      min: 0,
+    },
+
+    overstayChargeMultiplier: {
+      type: Number,
+      required: true,
+      default: 1.5,
+      min: 1,
+    },
+
+    operatingDays: {
+      type: [String],
+      default: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
+    },
+
+    timezone: {
+      type: String,
+      default: 'Asia/Kolkata',
+    },
+
+    currency: {
+      type: String,
+      default: 'INR',
+    },
+
     totalFloors: {
       type: Number,
       required: true,
       default: 1,
       min: 1,
+    },
+
+    overflowCapacity: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    overflowSlotCount: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
 
     totalSlots: {

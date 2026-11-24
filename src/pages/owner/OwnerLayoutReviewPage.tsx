@@ -17,7 +17,9 @@ import {
   ShieldCheck,
   Eye,
   RotateCcw,
+  Wrench,
 } from 'lucide-react';
+import { ownerApi } from '@/api/owner.api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -45,6 +47,8 @@ import {
   type LayoutCanvasConfig,
 } from '@/api/parkingLot.api';
 import { CanvasViewport } from '@/components/layout-designer/CanvasViewport';
+import { cn } from '@/lib/utils';
+import { useLiveSync } from '@/hooks/useLiveSync';
 
 const DEFAULT_CANVAS_CONFIG: LayoutCanvasConfig = {
   width: 1600,
@@ -121,21 +125,21 @@ export const OwnerLayoutReviewPage: React.FC = () => {
   }, [loadFacilityData]);
 
   // Load Floor Layout whenever activeFloorId changes
-  const loadActiveFloorLayout = useCallback(async () => {
+  const loadActiveFloorLayout = useCallback(async (isSilent = false) => {
     if (!parkingLotId || !activeFloorId) return;
     try {
-      setIsLoadingLayout(true);
+      if (!isSilent) setIsLoadingLayout(true);
       const res = await getOwnerFloorLayout(parkingLotId, activeFloorId);
       if (res.success && res.data) {
         setFloorLayout(res.data);
-      } else {
+      } else if (!isSilent) {
         setFloorLayout(null);
       }
     } catch (err: unknown) {
       console.warn('Could not load published floor layout:', err);
-      setFloorLayout(null);
+      if (!isSilent) setFloorLayout(null);
     } finally {
-      setIsLoadingLayout(false);
+      if (!isSilent) setIsLoadingLayout(false);
     }
   }, [parkingLotId, activeFloorId]);
 
@@ -144,6 +148,12 @@ export const OwnerLayoutReviewPage: React.FC = () => {
       loadActiveFloorLayout();
     }
   }, [activeFloorId, loadActiveFloorLayout]);
+
+  useLiveSync(() => {
+    if (activeFloorId) {
+      void loadActiveFloorLayout(true);
+    }
+  });
 
   // Active Floor object
   const activeFloor: OfficialHierarchyFloor | undefined = useMemo(() => {
@@ -169,6 +179,99 @@ export const OwnerLayoutReviewPage: React.FC = () => {
   const elements: LayoutElementData[] = useMemo(() => {
     return (floorLayout?.layout?.elements as LayoutElementData[]) || [];
   }, [floorLayout]);
+
+  // Selected Slot in Hierarchy
+  const selectedSlot = useMemo(() => {
+    if (!selectedElement || selectedElement.elementType !== 'ParkingSlot' || !hierarchy) return null;
+    for (const fl of hierarchy.floors) {
+      for (const zn of fl.zones) {
+        for (const sl of zn.slots) {
+          if (sl._id === selectedElement.slotId || sl.slotNumber === selectedElement.slotNumber) {
+            return sl;
+          }
+        }
+      }
+    }
+    return null;
+  }, [selectedElement, hierarchy]);
+
+  const [isUpdatingSlot, setIsUpdatingSlot] = useState(false);
+
+  // Operational Action: Put Under Maintenance / Return to Available
+  const handleToggleMaintenance = async () => {
+    const slotId = selectedSlot?._id || selectedElement?.slotId;
+    if (!slotId) return;
+    const currentStatus = selectedSlot?.slotStatus || 'Available';
+    const targetStatus = currentStatus === 'Under Maintenance' ? 'Available' : 'Under Maintenance';
+
+    try {
+      setIsUpdatingSlot(true);
+      await ownerApi.updateSlotOperationalStatus(slotId, {
+        slotStatus: targetStatus,
+        remarks: targetStatus === 'Under Maintenance' ? 'Owner maintenance inspection' : null,
+      });
+      toast.success(
+        targetStatus === 'Under Maintenance'
+          ? `Slot ${selectedElement?.slotNumber} is now placed under maintenance.`
+          : `Slot ${selectedElement?.slotNumber} is restored to available.`,
+      );
+      await Promise.all([loadFacilityData(), loadActiveFloorLayout()]);
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || err.message || 'Failed to update slot status');
+    } finally {
+      setIsUpdatingSlot(false);
+    }
+  };
+
+  // Operational Action: Toggle Overflow Bay
+  const handleToggleOverflow = async () => {
+    const slotId = selectedSlot?._id || selectedElement?.slotId;
+    if (!slotId) return;
+    const currentIsOverflow = Boolean(selectedSlot?.isOverflow || (selectedElement as any)?.isOverflow);
+    const targetIsOverflow = !currentIsOverflow;
+
+    try {
+      setIsUpdatingSlot(true);
+      await ownerApi.updateSlotOperationalStatus(slotId, {
+        isOverflow: targetIsOverflow,
+      });
+      toast.success(
+        targetIsOverflow
+          ? `Slot ${selectedElement?.slotNumber} designated as Overflow Bay (Universal & transparent gray).`
+          : `Slot ${selectedElement?.slotNumber} reverted to Regular Bay.`,
+      );
+
+      // Instantly update elements in canvas state for live visual reflection
+      if (floorLayout?.layout?.elements) {
+        const updatedEls = (floorLayout.layout.elements as any[]).map((el) => {
+          if (el.slotId === slotId || el.slotNumber === selectedElement?.slotNumber) {
+            return { ...el, isOverflow: targetIsOverflow };
+          }
+          return el;
+        });
+        setFloorLayout({
+          ...floorLayout,
+          layout: {
+            ...floorLayout.layout,
+            elements: updatedEls,
+          },
+        });
+      }
+
+      if (selectedElement) {
+        setSelectedElement({
+          ...selectedElement,
+          isOverflow: targetIsOverflow,
+        } as any);
+      }
+
+      await loadFacilityData();
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || err.message || 'Failed to toggle overflow bay');
+    } finally {
+      setIsUpdatingSlot(false);
+    }
+  };
 
   // Zoom / Pan handlers
   const handleZoomIn = () => setZoom((prev) => Math.min(3.0, Math.round((prev + 0.15) * 100) / 100));
@@ -596,38 +699,150 @@ export const OwnerLayoutReviewPage: React.FC = () => {
           />
         )}
 
-        {/* Selected Element Floating Inspector in Read-Only Mode */}
+        {/* Selected Element Floating Inspector / Operational Management Card */}
         {selectedElement && (
-          <div className="absolute bottom-4 right-4 z-30 max-w-sm rounded-lg border border-border/90 bg-card/95 p-3.5 shadow-xl backdrop-blur-md space-y-2 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-foreground flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full bg-primary" />
-                {selectedElement.elementType}
-              </span>
+          <div className="absolute bottom-4 right-4 z-30 w-80 rounded-2xl border border-border/90 bg-card/95 p-4 shadow-2xl backdrop-blur-md space-y-3 text-xs">
+            <div className="flex items-center justify-between border-b border-border/60 pb-2">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-primary" />
+                <span className="font-bold text-foreground text-sm">
+                  {selectedElement.elementType === 'ParkingSlot'
+                    ? `Bay ${selectedElement.slotNumber || selectedElement.label || 'Details'}`
+                    : selectedElement.elementType}
+                </span>
+              </div>
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground"
+                className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground cursor-pointer"
                 onClick={() => setSelectedElement(null)}
               >
-                ×
+                ✕
               </Button>
             </div>
-            {selectedElement.slotNumber && (
-              <p className="text-foreground">
-                <span className="text-muted-foreground">Slot Number:</span>{' '}
-                <strong className="font-mono text-primary">{selectedElement.slotNumber}</strong>
-              </p>
+
+            {selectedElement.elementType === 'ParkingSlot' ? (
+              <div className="space-y-3">
+                {/* Status Badges */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <Badge
+                    className={cn(
+                      'text-[10px] font-bold px-2 py-0.5',
+                      (selectedSlot?.slotStatus || 'Available') === 'Available' && 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40',
+                      selectedSlot?.slotStatus === 'Under Maintenance' && 'bg-amber-500/20 text-amber-400 border border-amber-500/40',
+                      selectedSlot?.slotStatus === 'Occupied' && 'bg-red-500/20 text-red-400 border border-red-500/40',
+                      selectedSlot?.slotStatus === 'Reserved' && 'bg-blue-500/20 text-blue-400 border border-blue-500/40',
+                    )}
+                  >
+                    {selectedSlot?.slotStatus || 'Available'}
+                  </Badge>
+
+                  {Boolean(selectedSlot?.isOverflow || (selectedElement as any)?.isOverflow) ? (
+                    <Badge className="bg-slate-800 text-slate-200 border border-slate-600 font-mono text-[10px] gap-1 px-2 py-0.5">
+                      <span className="h-1.5 w-1.5 rounded-xs bg-slate-400" />
+                      Overflow Bay
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="border-border text-muted-foreground text-[10px] px-2 py-0.5">
+                      Regular Bay
+                    </Badge>
+                  )}
+                </div>
+
+                {/* Slot Properties */}
+                <div className="p-2.5 rounded-lg bg-muted/30 border border-border/50 space-y-1 text-[11px]">
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Zone:</span>
+                    <span className="font-medium text-foreground">
+                      {selectedElement.zoneName || 'Standard'} ({selectedElement.zoneCode || 'A'})
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Vehicle Type:</span>
+                    <span className="font-medium text-foreground">
+                      {selectedSlot?.supportedVehicleType || (selectedElement as any)?.supportedVehicleType || 'Car'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Dimensions:</span>
+                    <span className="font-mono text-foreground">
+                      {selectedElement.width} × {selectedElement.height} px
+                    </span>
+                  </div>
+                </div>
+
+                {/* Owner Operational Controls */}
+                <div className="pt-2 border-t border-border/60 space-y-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">
+                    Owner Operational Actions
+                  </span>
+
+                  {/* 1. Maintenance Toggle */}
+                  {(selectedSlot?.slotStatus || 'Available') === 'Under Maintenance' ? (
+                    <Button
+                      size="sm"
+                      variant="default"
+                      disabled={isUpdatingSlot}
+                      onClick={handleToggleMaintenance}
+                      className="w-full text-xs h-8 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold cursor-pointer gap-1.5 shadow-2xs"
+                    >
+                      {isUpdatingSlot ? (
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                      )}
+                      Restore to Available
+                    </Button>
+                  ) : (selectedSlot?.slotStatus || 'Available') === 'Available' ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isUpdatingSlot}
+                      onClick={handleToggleMaintenance}
+                      className="w-full text-xs h-8 border-amber-500/40 text-amber-500 hover:bg-amber-500/10 font-semibold cursor-pointer gap-1.5"
+                    >
+                      {isUpdatingSlot ? (
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Wrench className="h-3.5 w-3.5" />
+                      )}
+                      Place Under Maintenance
+                    </Button>
+                  ) : (
+                    <div className="p-2 rounded-md bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-400">
+                      Slot is actively {selectedSlot?.slotStatus?.toLowerCase()} and cannot be modified.
+                    </div>
+                  )}
+
+                  {/* 2. Overflow Bay Toggle */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={isUpdatingSlot || selectedSlot?.slotStatus === 'Occupied'}
+                    onClick={handleToggleOverflow}
+                    className="w-full text-xs h-8 border-slate-700 hover:bg-slate-800 text-slate-200 cursor-pointer gap-1.5 font-medium"
+                  >
+                    {isUpdatingSlot ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5 text-slate-400" />
+                    )}
+                    {Boolean(selectedSlot?.isOverflow || (selectedElement as any)?.isOverflow)
+                      ? 'Revert to Regular Bay'
+                      : 'Designate as Overflow Bay'}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <p className="text-foreground">
+                  <span className="text-muted-foreground">Type:</span> {selectedElement.elementType}
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  Dimensions: {selectedElement.width} × {selectedElement.height} px • Angle: {selectedElement.rotation}°
+                </p>
+              </div>
             )}
-            {selectedElement.zoneName && (
-              <p className="text-foreground">
-                <span className="text-muted-foreground">Zone:</span> {selectedElement.zoneName} (
-                {selectedElement.zoneCode})
-              </p>
-            )}
-            <p className="text-[11px] text-muted-foreground">
-              Dimensions: {selectedElement.width} × {selectedElement.height} px • Angle: {selectedElement.rotation}°
-            </p>
           </div>
         )}
       </div>

@@ -31,6 +31,7 @@ import {
   type MobileLoginFormValues,
 } from '@/schemas/auth.schema';
 import { useAuthStore } from '@/stores/authStore';
+import { queueWelcomeGreeting } from '@/utils/voiceGreeting';
 import type { LoginMethod, RequestLoginOtpPayload, VerifyLoginOtpPayload } from '@/types/auth';
 
 type LoginStep = 'identifier' | 'otp';
@@ -185,6 +186,8 @@ export const LoginPage: React.FC = () => {
 
         // Store authenticated session strictly in memory
         setAuth(user, accessToken);
+        const isFirstTime = Boolean((user as { isFirstLogin?: boolean }).isFirstLogin);
+        queueWelcomeGreeting(user.fullName, isFirstTime);
 
         toast.success(`Welcome back, ${user.fullName}!`, {
           description: 'Login successful. Redirecting to your dashboard...',

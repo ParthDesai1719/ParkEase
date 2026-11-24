@@ -25,6 +25,7 @@ import {
 } from '@/schemas/auth.schema';
 import { requestRegisterOtp, verifyRegisterOtp } from '@/api/auth.api';
 import { useAuthStore } from '@/stores/authStore';
+import { queueWelcomeGreeting } from '@/utils/voiceGreeting';
 
 export const RegisterPage: React.FC = () => {
   const navigate = useNavigate();
@@ -133,6 +134,7 @@ export const RegisterPage: React.FC = () => {
 
         // Establish authenticated session in Zustand store immediately
         setAuth(user, accessToken);
+        queueWelcomeGreeting(user.fullName, true);
 
         toast.success(`Welcome to ParkEase, ${user.fullName}!`, {
           description: 'Your customer account and primary vehicle are now active.',

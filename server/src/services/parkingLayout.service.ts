@@ -16,6 +16,8 @@ import {
   type Role,
   UserModel,
   type User,
+  BookingModel,
+  type Booking,
 } from '../models/index.js';
 import { notificationService } from './notification.service.js';
 import { emailService } from './email.service.js';
@@ -49,6 +51,7 @@ export interface LayoutElementInput {
     | 'BuildingEntrance';
   slotId?: string | null | undefined;
   slotNumber?: string | null | undefined;
+  isOverflow?: boolean | undefined;
   zoneId?: string | null | undefined;
   zoneCode?: string | null | undefined;
   zoneName?: string | null | undefined;
@@ -1018,12 +1021,35 @@ export class ParkingLayoutService {
           lastModifiedBy: new mongoose.Types.ObjectId(adminUserId),
         },
       },
-      { new: true, runValidators: true },
+      { returnDocument: 'after', runValidators: true },
     )) as mongoose.HydratedDocument<ParkingLayout> | null;
 
     if (!savedLayout) {
       throw new AppError('Failed to save layout elements to database.', 500);
     }
+
+    // Synchronize isOverflow property to official ParkingSlot records
+    for (const el of slotElements) {
+      if (el.slotId && el.isOverflow !== undefined) {
+        await (ParkingSlotModel as mongoose.Model<ParkingSlot>).findByIdAndUpdate(
+          el.slotId,
+          { $set: { isOverflow: Boolean(el.isOverflow) } },
+        );
+      }
+    }
+
+    // Recompute total overflow slots across the facility
+    const totalOverflowSlots = await (ParkingSlotModel as mongoose.Model<ParkingSlot>)
+      .countDocuments({
+        parkingLotId: new mongoose.Types.ObjectId(parkingLotId),
+        isOverflow: true,
+      })
+      .exec();
+
+    await (ParkingLotModel as mongoose.Model<ParkingLot>).findByIdAndUpdate(
+      parkingLotId,
+      { $set: { overflowSlotCount: totalOverflowSlots } },
+    );
 
     // Identify deleted linked props that previously existed in draftLayout before this save
     const prevStructuralElements = (draftLayout.elements || []).filter(
@@ -1671,6 +1697,26 @@ export class ParkingLayoutService {
 
     await draftLayout.save();
 
+    // Synchronize isOverflow on all slots from published elements
+    const publishedSlotElements = (draftLayout.elements || []).filter(
+      (el: any) => el.elementType === 'ParkingSlot' && el.slotId,
+    );
+    for (const el of publishedSlotElements) {
+      if (el.isOverflow !== undefined) {
+        await (ParkingSlotModel as mongoose.Model<ParkingSlot>).findByIdAndUpdate(
+          el.slotId,
+          { $set: { isOverflow: Boolean(el.isOverflow) } },
+        );
+      }
+    }
+    const finalOverflowCount = await (ParkingSlotModel as mongoose.Model<ParkingSlot>)
+      .countDocuments({
+        parkingLotId: parkingLot._id,
+        isOverflow: true,
+      })
+      .exec();
+    parkingLot.overflowSlotCount = finalOverflowCount;
+
     // NOTICE: We do NOT touch parkingLot.parkingStatus! Publishing NEVER activates the parking lot.
     // Instead, update layoutReviewStatus to 'Pending Owner Review' for Owner's final inspection & confirmation.
     parkingLot.layoutReviewStatus = 'Pending Owner Review';
@@ -2235,6 +2281,87 @@ export class ParkingLayoutService {
     return {
       parkingLot,
       message: 'Parking facility activated successfully and is now LIVE!',
+    };
+  }
+
+  /**
+   * Updates the facility overflow capacity threshold.
+   * Enforces that threshold cannot be set below active/reserved overflow bookings.
+   */
+  static async updateOverflowConfig(
+    parkingLotId: string,
+    overflowCapacity: number,
+    adminUserId: string,
+    ipAddress?: string,
+  ) {
+    if (!mongoose.Types.ObjectId.isValid(parkingLotId)) {
+      throw new AppError('Invalid parking lot ID.', 400);
+    }
+    if (typeof overflowCapacity !== 'number' || overflowCapacity < 0) {
+      throw new AppError('Overflow capacity must be a non-negative number.', 400);
+    }
+
+    const parkingLot = await (ParkingLotModel as mongoose.Model<ParkingLot>)
+      .findById(parkingLotId)
+      .exec();
+    if (!parkingLot) {
+      throw new AppError('Parking lot not found.', 404);
+    }
+
+    // Check active/confirmed bookings on overflow slots
+    const overflowSlots = await (ParkingSlotModel as mongoose.Model<ParkingSlot>)
+      .find({
+        parkingLotId: parkingLot._id,
+        isOverflow: true,
+      })
+      .select('_id')
+      .lean()
+      .exec();
+
+    const overflowSlotIds = overflowSlots.map((s) => s._id);
+
+    const activeOverflowBookingsCount = await (BookingModel as mongoose.Model<Booking>)
+      .countDocuments({
+        parkingLotId: parkingLot._id,
+        currentSlotId: { $in: overflowSlotIds },
+        bookingStatus: { $in: ['Confirmed', 'Active', 'Overstay'] },
+      })
+      .exec();
+
+    if (overflowCapacity < activeOverflowBookingsCount) {
+      throw new AppError(
+        `Cannot reduce overflow capacity to ${overflowCapacity}. There are currently ${activeOverflowBookingsCount} active/confirmed bookings occupying overflow bays.`,
+        400,
+        'OVERFLOW_CAPACITY_CONFLICT',
+      );
+    }
+
+    parkingLot.overflowCapacity = overflowCapacity;
+    parkingLot.overflowSlotCount = overflowSlots.length;
+    await parkingLot.save();
+
+    await (AuditLogModel as mongoose.Model<AuditLog>).create({
+      userId: new mongoose.Types.ObjectId(adminUserId),
+      actionCode: 'OVERFLOW_CONFIG_UPDATED',
+      module: 'Parking Management',
+      actionTitle: 'Overflow Capacity Threshold Updated',
+      description: `Administrator updated overflow capacity threshold for "${parkingLot.parkingName}" to ${overflowCapacity} (Current overflow bays: ${overflowSlots.length}).`,
+      targetCollection: 'parkingLots',
+      targetDocumentId: parkingLot._id,
+      parkingLotId: parkingLot._id,
+      ipAddress: normalizeIp(ipAddress),
+      actionStatus: 'Success',
+      metadata: {
+        previousCapacity: parkingLot.overflowCapacity,
+        newCapacity: overflowCapacity,
+        overflowSlotCount: overflowSlots.length,
+      },
+    });
+
+    return {
+      overflowCapacity: parkingLot.overflowCapacity,
+      overflowSlotCount: parkingLot.overflowSlotCount,
+      message: 'Overflow capacity threshold updated successfully.',
     };
   }
 }
